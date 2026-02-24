@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memory-mcp"
+version = "0.1.0"
+description = "Memory system with MCP server - hybrid memory with TTL, local embeddings, graph memory"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.30.6",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    "aiosqlite==0.20.0",
+    "python-dateutil==2.9.0.post0",
+    "httpx==0.27.2",
+    # MCP
+    "mcp>=1.0.0",
+    # Local embeddings
+    "fastembed>=0.2.0",
+    # Graph memory
+    "ast-scope>=0.1.0",
+    # Redis
+    "redis>=5.0.0",
+    # PostgreSQL
+    "psycopg2-binary>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.8.6",
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+    "mypy==1.11.2",
+]
+
+[tool.setuptools]
+packages = ["core", "plugins", "api", "mcp_server"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+addopts = "--tb=short -v"
+
+[tool.coverage.run]
+source = ["core/llm", "core/search", "core/security", "core/health", "core/metrics", "core/cache", "mcp_server/memory_tools.py"]
+branch = true
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+fail_under = 45
+show_missing = true
+skip_covered = false

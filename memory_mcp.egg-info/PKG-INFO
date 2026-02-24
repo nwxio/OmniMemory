@@ -1,0 +1,101 @@
+Metadata-Version: 2.4
+Name: memory-mcp
+Version: 0.1.0
+Summary: Memory system with MCP server - hybrid memory with TTL, local embeddings, graph memory
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi==0.115.6
+Requires-Dist: uvicorn[standard]==0.30.6
+Requires-Dist: pydantic==2.10.4
+Requires-Dist: pydantic-settings==2.7.0
+Requires-Dist: aiosqlite==0.20.0
+Requires-Dist: python-dateutil==2.9.0.post0
+Requires-Dist: httpx==0.27.2
+Requires-Dist: mcp>=1.0.0
+Requires-Dist: fastembed>=0.2.0
+Requires-Dist: ast-scope>=0.1.0
+Provides-Extra: dev
+Requires-Dist: ruff==0.8.6; extra == "dev"
+Requires-Dist: pytest==8.3.4; extra == "dev"
+
+# Memory-MCP
+
+Memory system with MCP server - hybrid memory with TTL, local embeddings, graph memory.
+
+## Features
+
+- **Hybrid Search**: FTS (keyword) + Vector (semantic) + MMR deduplication
+- **TTL Support**: Auto-expiry for lessons and episodes
+- **Local Embeddings**: FastEmbed (no external API required)
+- **Graph Memory**: AST-based code graph analysis with ast-scope
+- **MCP Server**: Exposes memory as MCP tools and resources
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install -e .
+
+# Run MCP server (stdio)
+python -m mcp.server
+
+# Or with HTTP transport
+python -m mcp.server --transport http --port 8080
+```
+
+## Environment Variables
+
+```bash
+# Database
+MEMORY_DB_PATH=./memory.db
+
+# TTL (days)
+MEMORY_LESSONS_TTL_DAYS=90
+MEMORY_EPISODES_TTL_DAYS=60
+MEMORY_PREFERENCES_TTL_DAYS=180
+
+# Vector settings
+MEMORY_VECTOR_ENABLED=true
+MEMORY_VECTOR_MODEL=BAAI/bge-small-en-v1.5
+
+# Graph settings
+MEMORY_GRAPH_ENABLED=true
+```
+
+## MCP Tools
+
+- `memory_search` - Hybrid search across memory
+- `memory_upsert` - Save lesson/preference
+- `memory_get` - Get memory entry
+- `memory_list` - List lessons/preferences
+- `memory_delete` - Delete entry
+- `memory_consolidate` - Consolidate episodes into lessons
+- `memory_index_workspace` - Index workspace files
+- `memory_health` - Get system health
+
+## MCP Resources
+
+- `memory://lessons` - List all lessons
+- `memory://lessons/{key}` - Get specific lesson
+- `memory://preferences` - List preferences
+- `memory://preferences/{key}` - Get specific preference
+- `memory://health` - System health
+- `memory://session/{session_id}/episodes` - Session episodes
+- `memory://search/{query}` - Search results
+
+## Architecture
+
+```
+memory/
+├── core/              # Memory core (from OmniMind)
+│   ├── memory.py      # Main API
+│   ├── memory_sqlite.py
+│   ├── vector_memory.py
+│   └── graph_memory.py
+├── plugins/           # AI tool interface
+├── api/              # HTTP endpoints
+└── mcp/              # MCP server
+    ├── server.py
+    ├── memory_tools.py
+    └── memory_resources.py
+```

@@ -1,0 +1,141 @@
+#version: '3.8'
+
+services:
+  # ===========================================
+  # PostgreSQL - Основная база данных
+  # ===========================================
+  ai_postgres:
+    image: postgres:15-alpine
+    container_name: ai_postgres
+    restart: unless-stopped
+    
+    environment:
+      # Учётные данные PostgreSQL
+      POSTGRES_USER: memory_user
+      POSTGRES_PASSWORD: SecureP@ssw0rd_2024!MemoryDB
+      POSTGRES_DB: memory
+      
+      # Настройки производительности
+      # Выделено 25% от доступной RAM (при 4GB = 1GB)
+      POSTGRES_SHARED_BUFFERS: 256MB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 768MB
+      POSTGRES_MAINTENANCE_WORK_MEM: 64MB
+      POSTGRES_WORK_MEM: 4MB
+      
+      # WAL настройки для надёжности
+      POSTGRES_WAL_LEVEL: replica
+      POSTGRES_MAX_WAL_SENDERS: 3
+      POSTGRES_WAL_KEEP_SIZE: 64MB
+      
+      # Логирование
+      POSTGRES_LOG_STATEMENT: ddl
+      POSTGRES_LOG_MIN_DURATION_STATEMENT: 1000
+    
+    volumes:
+      # Постоянное хранилище данных
+      - postgres_data:/var/lib/postgresql/data
+      
+      # Кастомная конфигурация
+      - ./docker/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    
+    ports:
+      - "5442:5442"
+    
+    networks:
+      - memory_network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory_user -d memory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c maintenance_work_mem=64MB
+      -c work_mem=4MB
+      -c wal_level=replica
+      -c max_wal_senders=3
+      -c wal_keep_size=64MB
+      -c log_statement=ddl
+      -c log_min_duration_statement=1000
+
+  # ===========================================
+  # Redis - Кэширование и rate limiting
+  # ===========================================
+  ai_redis:
+    image: redis:7-alpine
+    container_name: ai_redis
+    restart: unless-stopped
+    
+    command: >
+      redis-server
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    
+    volumes:
+      # Постоянное хранилище для RDB/AOF
+      - redis_data:/data
+    
+    ports:
+      - "6379:6379"
+    
+    networks:
+      - memory_network
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ===========================================
+  # pgAdmin - Веб-интерфейс для PostgreSQL (опционально)
+  # ===========================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ai_pgadmin
+    restart: unless-stopped
+    
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    
+    ports:
+      - "5050:80"
+    
+    networks:
+      - memory_network
+    
+    depends_on:
+      - ai_postgres
+    
+    profiles:
+      - tools
+
+networks:
+  memory_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
