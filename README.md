@@ -1,5 +1,10 @@
 # Memory-MCP
 
+[![Quality](https://github.com/nwxio/OmniMemory/actions/workflows/quality.yml/badge.svg)](https://github.com/nwxio/OmniMemory/actions/workflows/quality.yml)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-FastMCP-7C3AED)](https://modelcontextprotocol.io/)
+
 A production-friendly memory platform with an MCP server interface.
 
 `memory-mcp` combines structured memory, semantic retrieval, knowledge graph operations,
@@ -11,6 +16,14 @@ cross-session context, and safety controls in a self-hosted package.
 - Supports durable memory primitives (lessons, preferences, procedures, entities, relations).
 - Includes search, extraction, consolidation, and quality/safety checks out of the box.
 - Can run fully local (SQLite + local embeddings) or with PostgreSQL/Redis.
+
+## Built for OpenCode
+
+This platform was actively developed and validated for OpenCode agent workflows.
+
+- OpenCode website: https://opencode.ai
+- OpenCode GitHub: https://github.com/anomalyco/opencode
+- Typical usage: run Memory-MCP as MCP backend for OpenCode sessions and reusable memory.
 
 ## Key capabilities
 
@@ -24,6 +37,12 @@ cross-session context, and safety controls in a self-hosted package.
 - Memory lifecycle controls: TTL cleanup, decay/merge/prune consolidation.
 - Reliability controls: circuit breaker, fallback mode, rate limiting, health endpoint.
 - Multilingual heuristics for `ru/uk/en` with universal Unicode-safe token handling.
+
+## Architecture diagram
+
+![Memory-MCP architecture](docs/architecture.png)
+
+Diagram source notes: `docs/architecture.md`
 
 ## Architecture overview
 
@@ -198,6 +217,58 @@ The server exposes the following MCP tools.
 - `memory://preferences`
 - `memory://health`
 
+## MCP client examples
+
+### OpenCode
+
+Example `~/.config/opencode/opencode.json` snippet:
+
+```json
+{
+  "mcpServers": {
+    "memory-mcp": {
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/path/to/memory"
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+Example `claude_desktop_config.json` snippet:
+
+```json
+{
+  "mcpServers": {
+    "memory-mcp": {
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/path/to/memory"
+    }
+  }
+}
+```
+
+### Cursor
+
+If your Cursor build supports MCP server config, use the same command pattern:
+
+```json
+{
+  "mcpServers": {
+    "memory-mcp": {
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/path/to/memory"
+    }
+  }
+}
+```
+
+Note: file locations and schema details may vary by client version.
+
 ## Usage examples
 
 ### Example: procedural + semantic memory
@@ -291,7 +362,8 @@ python -m mypy core/security/audit.py core/security/gdpr.py core/search/bm25.py 
 - Environment presets: `ENV_CONFIGS.md`
 - Docker deployment: `docker/README.md`
 - Install notes: `INSTALL.md`
+- Contributing guide: `CONTRIBUTING.md`
 
 ## License
 
-Use according to your repository license policy.
+MIT. See `LICENSE`.
