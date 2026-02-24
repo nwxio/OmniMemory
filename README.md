@@ -96,6 +96,14 @@ Docker details: `docker/README.md`
 
 Environment presets: `ENV_CONFIGS.md`
 
+## Search indexing (Google)
+
+- Landing page: `index.html`
+- Crawl rules: `robots.txt`
+- Sitemap: `sitemap.xml`
+- Full indexing guide: `SEO_INDEXING.md`
+- Regenerate SEO assets: `python3 scripts/generate_seo_assets.py`
+
 ## Configuration highlights
 
 Common environment values:
@@ -366,6 +374,7 @@ python -m mypy core/security/audit.py core/security/gdpr.py core/search/bm25.py 
 - Code of conduct: `CODE_OF_CONDUCT.md`
 - Release process: `RELEASE_CHECKLIST.md`
 - Security policy: `SECURITY.md`
+- Google indexing guide: `SEO_INDEXING.md`
 
 ## License
 
