@@ -1,193 +1,155 @@
-# Docker Compose Setup для Memory-MCP
+# Docker setup for Memory-MCP
 
-## Быстрый старт
+This guide explains how to run Memory-MCP with Docker infrastructure
+(`PostgreSQL + Redis`, optional `pgAdmin`).
 
-### 1. Запуск PostgreSQL + Redis
+## Quick start
+
+### 1) Start infrastructure
 
 ```bash
-# Запустить все сервисы
-docker-compose up -d
+docker compose up -d
 
-# Проверить статус
-docker-compose ps
-
-# Посмотреть логи
-docker-compose logs -f
+# or use helper script
+./docker-compose.sh start
 ```
 
-### 2. Настройка приложения
-
-Готовая конфигурация уже в `.env.docker` - все пароли настроены!
-
-Просто скопируйте:
+### 2) Apply Docker environment preset
 
 ```bash
 cp .env.docker .env
 ```
 
-Или запустите с явным указанием файла:
+### 3) Start the MCP server
 
 ```bash
-export $(cat .env.docker | xargs) && python -m mcp_server.server
+python -m mcp_server.server
 ```
 
-### 3. Проверка подключения
+### 4) Verify services
 
 ```bash
-# PostgreSQL
+docker compose ps
 docker exec -it ai_postgres psql -U memory_user -d memory
-
-# Redis
 docker exec -it ai_redis redis-cli ping
-
-# Проверка health
-docker-compose ps
 ```
 
-## Сервисы
+## Services
 
-| Сервис | Контейнер | Порт | Описание |
-|--------|-----------|------|----------|
-| PostgreSQL | ai_postgres | 5442 | Основная БД |
-| Redis | ai_redis | 6379 | Кэш + rate limiting |
-| pgAdmin | ai_pgadmin | 5050 | Веб-интерфейс БД (опционально) |
+| Service | Container | Port | Purpose |
+|---------|-----------|------|---------|
+| PostgreSQL | `ai_postgres` | `5442` | primary database |
+| Redis | `ai_redis` | `6379` | cache + rate limiting |
+| pgAdmin (optional) | `ai_pgadmin` | `5050` | PostgreSQL web UI |
 
-## Управление
+Start with pgAdmin profile:
 
 ```bash
-# Остановить все сервисы
-docker-compose down
-
-# Остановить с удалением данных (WARNING!)
-docker-compose down -v
-
-# Перезапустить сервисы
-docker-compose restart
-
-# Пересоздать контейнеры
-docker-compose up -d --force-recreate
-
-# Запустить только PostgreSQL
-docker-compose up -d ai_postgres
-
-# Запустить с pgAdmin
-docker-compose --profile tools up -d
+docker compose --profile tools up -d
 ```
 
-## Мониторинг
+## Day-to-day commands
 
 ```bash
-# Статистика использования ресурсов
+# stop
+docker compose down
+
+# stop + remove volumes (destructive)
+docker compose down -v
+
+# restart
+docker compose restart
+
+# recreate containers
+docker compose up -d --force-recreate
+
+# logs
+docker compose logs -f
+docker compose logs -f ai_postgres
+docker compose logs -f ai_redis
+
+# resource usage
 docker stats ai_postgres ai_redis
-
-# Логи PostgreSQL
-docker-compose logs ai_postgres
-
-# Логи Redis
-docker-compose logs ai_redis
-
-# Проверка здоровья
-docker-compose ps
 ```
 
-## Бэкапы
+## Backups
 
-### PostgreSQL
+### PostgreSQL backup/restore
 
 ```bash
-# Создать дамп
+# backup
 docker exec ai_postgres pg_dump -U memory_user memory > backup_$(date +%Y%m%d).sql
 
-# Восстановить из дампа
+# restore
 docker exec -i ai_postgres psql -U memory_user memory < backup_20240101.sql
 ```
 
-### Redis
+### Redis backup
 
 ```bash
-# Копировать RDB файл
 docker cp ai_redis:/data/dump.rdb ./redis_backup_$(date +%Y%m%d).rdb
 ```
 
-## Оптимизация
+## Tuned defaults in this repo
 
-### PostgreSQL tuned для Memory-MCP:
+PostgreSQL (memory-focused profile):
 
-- `shared_buffers = 256MB` - 25% от RAM контейнера
-- `effective_cache_size = 768MB` - 75% от RAM
-- `work_mem = 4MB` - для сложных запросов
-- `maintenance_work_mem = 64MB` - для VACUUM/CREATE INDEX
-- `autovacuum` настроен для частых UPDATE/DELETE
+- `shared_buffers=256MB`
+- `effective_cache_size=768MB`
+- `work_mem=4MB`
+- `maintenance_work_mem=64MB`
+- WAL durability and logging tuned in `docker-compose.yml`
 
-### Redis оптимизация:
+Redis:
 
-- `maxmemory = 128mb` - лимит памяти
-- `maxmemory-policy = allkeys-lru` - LRU eviction
-- `appendonly = yes` - персистентность
-- `appendfsync = everysec` - баланс производительности/надёжности
+- `maxmemory=128mb`
+- `maxmemory-policy=allkeys-lru`
+- `appendonly=yes`
+- `appendfsync=everysec`
 
-## Безопасность
+## Security checklist
 
-1. **Смените пароли** в `docker-compose.yml`:
-   - `POSTGRES_PASSWORD`
-   - `PGADMIN_DEFAULT_PASSWORD`
+Before public or production deployment:
 
-2. **Не публикуйте порты** в production:
-   ```yaml
-   # Уберите секцию ports:
-   # ports:
-   #   - "5442:5442"
-   ```
-
-3. **Используйте secrets** для чувствительных данных:
-   ```yaml
-   secrets:
-     - db_password
-   
-   services:
-     ai_postgres:
-       environment:
-         POSTGRES_PASSWORD_FILE: /run/secrets/db_password
-   ```
+1. Change default passwords in `docker-compose.yml` and `.env`.
+2. Do not expose DB/cache ports publicly unless required.
+3. Use Docker Secrets (or Vault/KMS) for credentials.
+4. Restrict network access with firewall/security groups.
+5. Enable regular encrypted backups.
 
 ## Troubleshooting
 
-### PostgreSQL не запускается
+### PostgreSQL fails to start
 
 ```bash
-# Проверить логи
-docker-compose logs ai_postgres
-
-# Проверить volume
-docker volume ls | grep memory_postgres_data
+docker compose logs ai_postgres
+docker volume ls | grep postgres
+docker exec ai_postgres pg_isready -U memory_user -d memory
 ```
 
-### Redis не подключается
+### Redis does not respond
 
 ```bash
-# Проверить доступность
+docker compose logs ai_redis
 docker exec ai_redis redis-cli ping
-
-# Проверить логи
-docker-compose logs ai_redis
 ```
 
-### Проблемы с памятью
+### High memory usage / storage growth
 
 ```bash
-# Очистить кэш Redis
+# clear Redis cache (destructive)
 docker exec ai_redis redis-cli FLUSHALL
 
-# Vacuum PostgreSQL
+# vacuum PostgreSQL
 docker exec ai_postgres psql -U memory_user -d memory -c "VACUUM FULL;"
 ```
 
-## Production Deployment
+## Production notes
 
-Для production используйте:
+For production use:
 
-1. **Docker Swarm/Kubernetes** для оркестрации
-2. **Отдельные volume** для данных
-3. **Secrets management** (Docker Secrets, Vault)
-4. **Monitoring** (Prometheus + Grafana)
-5. **Backup strategy** (регулярные бэкапы + репликация)
+1. Run behind orchestration (`Docker Swarm` or `Kubernetes`).
+2. Use managed secrets and encrypted volumes.
+3. Add monitoring (`Prometheus/Grafana`) and alerting.
+4. Add backup retention and restore drills.
+5. Validate rolling upgrade and rollback procedure.

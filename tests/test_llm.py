@@ -47,7 +47,7 @@ class TestFallbackConsolidator:
 
         consol = FallbackConsolidator()
 
-        text = "это тестовый текст для проверки извлечения ключевых слов тест тест"
+        text = "this is a test text to verify keyword extraction test test"
         keywords = consol.extract_keywords(text, top_n=3)
 
         assert isinstance(keywords, list)
@@ -58,7 +58,29 @@ class TestFallbackConsolidator:
 
         consol = FallbackConsolidator()
 
-        text = "я хочу использовать питон для работы мне нравится машинное обучение"
+        text = "i want to use python for work i like machine learning"
+        prefs = consol.extract_preferences(text)
+
+        assert isinstance(prefs, list)
+        assert len(prefs) > 0
+
+    def test_extract_preferences_ru(self):
+        from core.llm.fallback import FallbackConsolidator
+
+        consol = FallbackConsolidator()
+
+        text = "я хочу использовать питон для работы"
+        prefs = consol.extract_preferences(text)
+
+        assert isinstance(prefs, list)
+        assert len(prefs) > 0
+
+    def test_extract_preferences_uk(self):
+        from core.llm.fallback import FallbackConsolidator
+
+        consol = FallbackConsolidator()
+
+        text = "мені потрібно використовувати python для роботи"
         prefs = consol.extract_preferences(text)
 
         assert isinstance(prefs, list)
@@ -69,7 +91,7 @@ class TestFallbackConsolidator:
 
         consol = FallbackConsolidator()
 
-        text = "Первое предложение. Второе предложение. Третье предложение."
+        text = "First sentence. Second sentence. Third sentence."
         summary = consol.summarize(text, max_sentences=2)
 
         assert isinstance(summary, str)
@@ -81,8 +103,8 @@ class TestFallbackConsolidator:
         consol = FallbackConsolidator()
 
         episodes = [
-            {"title": "Task 1", "summary": "Сделал первую задачу"},
-            {"title": "Task 2", "summary": "Сделал вторую задачу"},
+            {"title": "Task 1", "summary": "Completed the first task"},
+            {"title": "Task 2", "summary": "Completed the second task"},
         ]
 
         result = consol.consolidate_episodes(episodes)

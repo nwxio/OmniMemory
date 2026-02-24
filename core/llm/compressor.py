@@ -30,16 +30,16 @@ class ContextCompressor:
         if not llm_settings.auto_consolidate:
             return self._simple_compress(messages, max_tokens)
 
-        prompt_text = f"""Сожми это сообщение, сохранив ключевую информацию и смысл:
+        prompt_text = f"""Compress this message while preserving key information and meaning:
 
 {prompt[:10000]}
 
-Сжатая версия (сохрани ключевые факты и решения):"""
+Compressed version (keep key facts and decisions):"""
 
         try:
             compressed = await llm_client.complete(
                 prompt=prompt_text,
-                system="Ты ассистент, который сжимает контекст, сохраняя ключевую информацию.",
+                system="You are an assistant that compresses context while preserving key information.",
                 max_tokens=max_tokens // 4,
                 temperature=0.3,
                 use_cache=False,
@@ -76,7 +76,7 @@ class ContextCompressor:
 
         return [
             first,
-            {"role": "system", "content": "[контекст сжат]"},
+            {"role": "system", "content": "[context compressed]"},
             last,
         ]
 
@@ -95,16 +95,16 @@ class ContextCompressor:
         if not llm_settings.auto_consolidate:
             return self._simple_extract(messages)
 
-        prompt = f"""Извлеки ключевую информацию из этого разговора:
+        prompt = f"""Extract key information from this conversation:
 
 {self._messages_to_text(messages)}
 
-Верни JSON:
+Return JSON:
 {{
-    "decisions": ["список принятых решений"],
-    "facts": ["важные факты"],
-    "tasks": ["упомянутые задачи"],
-    "entities": ["сущности (имена, названия, понятия)"]
+    "decisions": ["list of decisions made"],
+    "facts": ["important facts"],
+    "tasks": ["mentioned tasks"],
+    "entities": ["entities (names, products, concepts)"]
 }}
 
 JSON:"""
@@ -112,7 +112,7 @@ JSON:"""
         try:
             result = await llm_client.complete(
                 prompt=prompt,
-                system="Ты ассистент, который извлекает структурированную информацию.",
+                system="You are an assistant that extracts structured information.",
                 max_tokens=1000,
                 temperature=0.3,
                 use_cache=True,
@@ -131,8 +131,8 @@ JSON:"""
         tasks = []
         entities = set()
 
-        keywords_decisions = ["решили", "решено", "принято", "будет", "нужно сделать"]
-        keywords_tasks = ["задача", "сделать", "надо", "нужно", "todo", "следующий"]
+        keywords_decisions = ["decided", "decision", "approved", "will", "need to do"]
+        keywords_tasks = ["task", "do", "todo", "need", "next", "follow-up"]
 
         for msg in messages:
             content = msg.get("content", "").lower()
@@ -175,28 +175,28 @@ JSON:"""
             return text[: max_tokens * 4]
 
         if focus == "technical":
-            prompt = f"""Извлеки техническую информацию из текста (код, API, настройки):
+            prompt = f"""Extract technical information from this text (code, API, configuration):
 
 {text[:15000]}
 
-Техническая информация:"""
+Technical details:"""
         elif focus == "details":
-            prompt = f"""Сохрани все детали из текста:
+            prompt = f"""Keep all important details from this text:
 
 {text[:15000]}
 
-Детали:"""
+Details:"""
         else:
-            prompt = f"""Сделай краткое резюме текста, сохранив основную информацию:
+            prompt = f"""Write a concise summary of this text while preserving key information:
 
 {text[:15000]}
 
-Резюме:"""
+Summary:"""
 
         try:
             result = await llm_client.complete(
                 prompt=prompt,
-                system="Ты ассистент, который сжимает документы.",
+                system="You are an assistant that compresses documents.",
                 max_tokens=max_tokens,
                 temperature=0.3,
                 use_cache=True,

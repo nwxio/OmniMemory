@@ -27,23 +27,44 @@ def infer_preferences_from_text(text: str) -> List[Tuple[str, Any]]:
     # ---- Language / output style ----
     if re.search(r"\bна\s+русском\b|\bрусском\s+языке\b", t, _FLAGS):
         out.append(("style.language", "ru"))
+    if re.search(r"\bукраїнськ\w*\s+мов\w*\b|\bукраїнською\b", t, _FLAGS):
+        out.append(("style.language", "uk"))
+    if re.search(r"\bin\s+english\b|\benglish\s+language\b", t, _FLAGS):
+        out.append(("style.language", "en"))
 
     # ---- Code conventions ----
-    if re.search(r"комментари[йи]\w*\s+в\s+коде\s+.*английск", t, _FLAGS):
+    if (
+        re.search(r"comments?\s+in\s+code\s+.*english", t, _FLAGS)
+        or re.search(r"комментари[йи]\w*\s+в\s+коде\s+.*английск", t, _FLAGS)
+        or re.search(r"коментар\w*\s+в\s+коді\s+.*англійськ", t, _FLAGS)
+    ):
         out.append(("style.code_comments_language", "en"))
 
-    if re.search(r"\bкод\b\s+.*\bанглийск", t, _FLAGS):
+    if (
+        re.search(r"\bcode\b\s+.*\benglish", t, _FLAGS)
+        or re.search(r"\bкод\b\s+.*\bанглийск", t, _FLAGS)
+        or re.search(r"\bкод\b\s+.*\bанглійськ", t, _FLAGS)
+    ):
         # This means the programming-language tokens should be English.
         out.append(("style.code_language", "en"))
 
     # ---- Web/source restrictions ----
-    if re.search(r"не\s+предлагать\s+ресурс\w*\s+из\s+доменов?\s+\*\.ru", t, _FLAGS) or re.search(
-        r"никогда\s+не\s+предлагать\s+.*\*\.ru", t, _FLAGS
+    if (
+        re.search(r"do\s+not\s+suggest\s+resources?\s+from\s+domains?\s+\*\.ru", t, _FLAGS)
+        or re.search(r"never\s+suggest\s+.*\*\.ru", t, _FLAGS)
+        or re.search(r"не\s+предлагать\s+ресурс\w*\s+из\s+доменов?\s+\*\.ru", t, _FLAGS)
+        or re.search(r"никогда\s+не\s+предлагать\s+.*\*\.ru", t, _FLAGS)
+        or re.search(r"не\s+пропонувати\s+ресурс\w*\s+з\s+доменів?\s+\*\.ru", t, _FLAGS)
+        or re.search(r"ніколи\s+не\s+пропонувати\s+.*\*\.ru", t, _FLAGS)
     ):
         out.append(("web.block_tlds", ["ru", "рф", "xn--p1ai"]))
 
     # ---- Currency preference ----
-    if re.search(r"\bв\s+гривн", t, _FLAGS) or re.search(r"\bUAH\b", t, _FLAGS):
+    if (
+        re.search(r"\bin\s+hryvnia\b", t, _FLAGS)
+        or re.search(r"\bUAH\b", t, _FLAGS)
+        or re.search(r"\bгривн\w*\b|\bгрн\b", t, _FLAGS)
+    ):
         out.append(("finance.currency", "UAH"))
 
     # Dedupe by key (last write wins)

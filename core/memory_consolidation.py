@@ -23,7 +23,7 @@ class ConsolidationSuggestion:
 
 
 _MARKER_RE = re.compile(
-    r"^\s*(?:lesson|rule|note|fix|decision|takeaway|важно|вывод|правило|заметка|решение)\s*[:\-—]+\s*",
+    r"^\s*(?:lesson|rule|note|fix|decision|takeaway|important|conclusion|важно|вывод|правило|заметка|решение|важливо|висновок|правило|нотатка|рішення)\s*[:\-—]+\s*",
     _FLAGS,
 )
 
@@ -93,9 +93,15 @@ def _extract_lesson_candidates(text: str) -> List[Tuple[str, float]]:
         # High-signal tokens.
         if re.search(r"\bnever\b|\bmust\b|\bshould\b|\bdo not\b", line, _FLAGS):
             score += 0.25
+        if re.search(r"\bdon't\s+need\b|\bcannot\b|\balways\b|\bnever\b", line, _FLAGS):
+            score += 0.25
         if re.search(r"\bне\s+надо\b|\bнельзя\b|\bвсегда\b|\bникогда\b", line, _FLAGS):
             score += 0.25
-        if re.search(r"\bbug\b|\bfix\b|\bошибк\w*\b|\bпочин\w*\b", line, _FLAGS):
+        if re.search(r"\bне\s+потрібно\b|\bне\s+можна\b|\bзавжди\b|\bніколи\b", line, _FLAGS):
+            score += 0.25
+        if re.search(r"\bbug\b|\bfix\b|\berror\w*\b|\brepair\w*\b", line, _FLAGS):
+            score += 0.15
+        if re.search(r"\bошибк\w*\b|\bпочин\w*\b|\bпомилк\w*\b|\bвиправ\w*\b", line, _FLAGS):
             score += 0.15
 
         line = _norm_text(line)

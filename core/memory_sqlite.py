@@ -43,7 +43,7 @@ def _sanitize_fts_query(q: str) -> str:
 
     FTS5's MATCH parser is picky: punctuation like "!", ".", quotes, etc. can trigger
     syntax errors. We intentionally *strip almost all punctuation* and collapse
-    whitespace so casual prompts like "приввет !!" or "ping 1.1.1.1" won't break
+    whitespace so casual prompts like "hello !!" or "ping 1.1.1.1" won't break
     retrieval.
 
     This is not meant to be perfect linguistics — just robust and safe.
@@ -52,7 +52,7 @@ def _sanitize_fts_query(q: str) -> str:
     if not q:
         return ""
     # Keep unicode word characters + spaces only.
-    q = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_Ѐ-ӿ\s]", " ", q)
+    q = re.sub(r"[^\w\s]", " ", q, flags=re.UNICODE)
     q = re.sub(r"\s+", " ", q).strip()
     return q
 
@@ -545,7 +545,7 @@ class MemorySQL:
                 t = (s or "").strip().lower()
                 t = re.sub(r"\s+", " ", t)
                 if mode == "loose":
-                    t = re.sub(r"[^0-9a-zA-ZА-Яа-яЁё_Ѐ-ӿ\s]", "", t)
+                    t = re.sub(r"[^\w\s]", "", t, flags=re.UNICODE)
                     t = re.sub(r"\s+", " ", t).strip()
                 return t
 

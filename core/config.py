@@ -236,9 +236,9 @@ class Settings(BaseSettings):
     # Default chat system prompt (used by chat tool when caller did not provide one).
     # Can be overridden via OMNIMIND_CHAT_DEFAULT_SYSTEM in .env.
     chat_default_system: str = (
-        "Ты дружелюбный, общительный ИИ‑ассистент. Отвечай по‑человечески, "
-        "можно с лёгким юмором, но без воды. Если пользователь просит код — давай точный, "
-        "рабочий код. Если есть риски/неопределённость — объясни простыми словами."
+        "You are a friendly, conversational AI assistant. Answer naturally and clearly, "
+        "you may use light humor but avoid fluff. If the user asks for code, provide precise, "
+        "working code. If there are risks or uncertainty, explain them in simple terms."
     )
 
     # Optional higher-priority chat system prompt. If set, it overrides chat_default_system.
@@ -326,7 +326,7 @@ class Settings(BaseSettings):
 
     # Web research source filtering
     # Comma-separated list of blocked TLDs.
-    # Default blocks Russian TLDs (including punycode form for .рф).
+    # Default blocks Russian TLDs (including punycode form).
     # Accepts values with or without a leading dot (e.g. "ru" or ".ru").
     web_blocked_tlds: str = ".ru,.рф,xn--p1ai"
 
@@ -346,7 +346,9 @@ class Settings(BaseSettings):
     # Merge-only with preferences.
     browser_sensitive_keywords: str = (
         "delete,remove,confirm,save,submit,pay,checkout,buy,order,sign in,log in,login,logout,sign out,transfer,send,withdraw,"
-        "удал,подтверд,оплат,куп,заказ,войти,вход,выйти,перевод,отправ"
+        "delete account,confirm payment,purchase,order now,sign in,log out,transfer funds,send money,"
+        "удал,подтверд,оплат,куп,заказ,войти,вход,выйти,перевод,отправ,"
+        "видал,підтверд,оплат,куп,замов,увійти,вхід,вийти,переказ,надісл"
     )
 
     # Hard approval keywords (cannot be auto-executed even in A4) (comma-separated).

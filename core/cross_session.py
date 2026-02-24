@@ -29,8 +29,15 @@ SESSION_STATUS_ENDED = "ended"
 
 SESSION_TIMEOUT_MINUTES = 20
 SESSION_END_MARKERS = [
+    # EN
+    "session ended",
+    "session complete",
+    # RU
     "сессия закончена",
     "сессия окончена",
+    # UK
+    "сесію завершено",
+    "сесія завершена",
 ]
 
 

@@ -26,7 +26,7 @@ class TestBM25:
         from core.search.bm25 import BM25
 
         bm25 = BM25()
-        tokens = bm25._tokenize("это тестовый текст для тестирования")
+        tokens = bm25._tokenize("this is a test text for tokenization")
 
         assert isinstance(tokens, list)
         assert len(tokens) > 0
@@ -37,12 +37,12 @@ class TestBM25:
         ranker = BM25Ranker()
 
         docs = [
-            {"text": "питон язык программирования"},
-            {"text": "джава скрипт веб"},
-            {"text": "питон для машинного обучения"},
+            {"text": "python programming language"},
+            {"text": "javascript for the web"},
+            {"text": "python for machine learning"},
         ]
 
-        results = ranker.rank("питон", docs, k=2)
+        results = ranker.rank("python", docs, k=2)
 
         assert len(results) <= 2
         assert results[0]["bm25_score"] >= results[1]["bm25_score"]
@@ -53,12 +53,12 @@ class TestBM25:
         ranker = BM25Ranker()
 
         docs = [
-            {"text": "машинное обучение нейросети"},
-            {"text": "веб разработка на питоне"},
-            {"text": "глубокое обучение трансформеры"},
+            {"text": "machine learning neural networks"},
+            {"text": "web development in python"},
+            {"text": "deep learning transformers"},
         ]
 
-        results = ranker.rank("обучение", docs, k=3)
+        results = ranker.rank("learning", docs, k=3)
 
         assert len(results) >= 1
         assert results[0].get("bm25_score", 0) > 0
@@ -76,9 +76,25 @@ class TestQueryExpansion:
         from core.search.query_expansion import QueryExpander
 
         expander = QueryExpander()
-        expansions = expander.expand("файл")
+        expansions = expander.expand("file")
 
         assert isinstance(expansions, list)
+
+    def test_expand_synonyms_ru(self):
+        from core.search.query_expansion import QueryExpander
+
+        expander = QueryExpander()
+        expansions = expander.expand("файл", max_terms=20)
+
+        assert "file" in expansions
+
+    def test_expand_synonyms_uk(self):
+        from core.search.query_expansion import QueryExpander
+
+        expander = QueryExpander()
+        expansions = expander.expand("пошук", max_terms=20)
+
+        assert "search" in expansions
 
     def test_expand_file_extensions(self):
         from core.search.query_expansion import QueryExpander
@@ -92,10 +108,10 @@ class TestQueryExpansion:
         from core.search.query_expansion import QueryExpander
 
         expander = QueryExpander()
-        expanded = expander.expand_query("файл код")
+        expanded = expander.expand_query("file code")
 
         assert isinstance(expanded, str)
-        assert "файл" in expanded or "код" in expanded
+        assert "file" in expanded or "code" in expanded
 
 
 class TestHybridSearch:
@@ -158,9 +174,9 @@ class TestHybridSearch:
         search = HybridSearch()
 
         candidates = [
-            {"text": "питон язык программирования", "score": 1.0, "path": "1"},
-            {"text": "питон змея животное", "score": 0.9, "path": "2"},
-            {"text": "джава кофе напиток", "score": 0.8, "path": "3"},
+            {"text": "python programming language", "score": 1.0, "path": "1"},
+            {"text": "python snake animal", "score": 0.9, "path": "2"},
+            {"text": "java coffee drink", "score": 0.8, "path": "3"},
         ]
 
         diversified = search._apply_mmr(candidates, limit=3)

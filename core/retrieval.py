@@ -55,13 +55,13 @@ def _dedup_hits(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-_WORD_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё_Ѐ-ӿ]{2,}", re.UNICODE)
+_WORD_RE = re.compile(r"[\w]{2,}", re.UNICODE)
 
 
 def _query_tokens(q: str, *, limit: int = 12) -> List[str]:
     """Extract a small set of query tokens for best-effort matching in docs.
 
-    This is intentionally simple and robust across languages (Latin/Cyrillic).
+    This is intentionally simple and robust across languages.
     """
     q = (q or "").strip()
     if not q:

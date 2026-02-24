@@ -3,26 +3,69 @@ from collections import Counter
 
 
 PREFERENCE_PATTERNS = [
-    (r"я\s+(хочу|хотел|хотела|желаю)\s+(.*?)(?:\.|$)", "want"),
-    (r"мне\s+(нужно|необходимо)\s+(.*?)(?:\.|$)", "need"),
-    (r"мне\s+(нравится|люблю)\s+(.*?)(?:\.|$)", "like"),
-    (r"я\s+(не\s+)?(хочу|люблю|ненавижу)\s+(.*?)(?:\.|$)", "preference"),
-    (r"всегда\s+(.*?)(?:\.|$)", "always"),
-    (r"никогда\s+(.*?)(?:\.|$)", "never"),
-    (r"предпочитаю\s+(.*?)(?:\.|$)", "prefer"),
-    (r"лучше\s+(.*?)(?:\.|$)", "prefer"),
-    (r"использую\s+(.*?)(?:\.|$)", "use"),
+    # EN
+    (r"\bi\s+(?:want|would\s+like)\s+(?P<value>.*?)(?:[.!?]|$)", "want"),
+    (r"\bi\s+(?:need|require)\s+(?P<value>.*?)(?:[.!?]|$)", "need"),
+    (r"\bi\s+(?:like|love)\s+(?P<value>.*?)(?:[.!?]|$)", "like"),
+    (
+        r"\bi\s+(?:do\s+not\s+|don't\s+)?(?:want|like|hate)\s+(?P<value>.*?)(?:[.!?]|$)",
+        "preference",
+    ),
+    (r"\balways\s+(?P<value>.*?)(?:[.!?]|$)", "always"),
+    (r"\bnever\s+(?P<value>.*?)(?:[.!?]|$)", "never"),
+    (r"\bprefer\s+(?P<value>.*?)(?:[.!?]|$)", "prefer"),
+    (r"\bbetter\s+(?P<value>.*?)(?:[.!?]|$)", "prefer"),
+    (r"\buse\s+(?P<value>.*?)(?:[.!?]|$)", "use"),
+    # RU
+    (r"\bя\s+(?:хочу|хотел|хотела|желаю)\s+(?P<value>.*?)(?:[.!?]|$)", "want"),
+    (r"\bмне\s+(?:нужно|необходимо)\s+(?P<value>.*?)(?:[.!?]|$)", "need"),
+    (r"\bмне\s+(?:нравится|люблю)\s+(?P<value>.*?)(?:[.!?]|$)", "like"),
+    (r"\bя\s+(?:не\s+)?(?:хочу|люблю|ненавижу)\s+(?P<value>.*?)(?:[.!?]|$)", "preference"),
+    (r"\bвсегда\s+(?P<value>.*?)(?:[.!?]|$)", "always"),
+    (r"\bникогда\s+(?P<value>.*?)(?:[.!?]|$)", "never"),
+    (r"\bпредпочитаю\s+(?P<value>.*?)(?:[.!?]|$)", "prefer"),
+    (r"\bлучше\s+(?P<value>.*?)(?:[.!?]|$)", "prefer"),
+    (r"\bиспользую\s+(?P<value>.*?)(?:[.!?]|$)", "use"),
+    # UK
+    (r"\bя\s+(?:хочу|хотів|хотіла|бажаю)\s+(?P<value>.*?)(?:[.!?]|$)", "want"),
+    (r"\bмені\s+(?:потрібно|необхідно)\s+(?P<value>.*?)(?:[.!?]|$)", "need"),
+    (r"\bмені\s+(?:подобається|люблю)\s+(?P<value>.*?)(?:[.!?]|$)", "like"),
+    (r"\bя\s+(?:не\s+)?(?:хочу|люблю|ненавиджу)\s+(?P<value>.*?)(?:[.!?]|$)", "preference"),
+    (r"\bзавжди\s+(?P<value>.*?)(?:[.!?]|$)", "always"),
+    (r"\bніколи\s+(?P<value>.*?)(?:[.!?]|$)", "never"),
+    (r"\bвіддаю\s+перевагу\s+(?P<value>.*?)(?:[.!?]|$)", "prefer"),
+    (r"\bкраще\s+(?P<value>.*?)(?:[.!?]|$)", "prefer"),
+    (r"\bвикористовую\s+(?P<value>.*?)(?:[.!?]|$)", "use"),
 ]
 
 
 class FallbackConsolidator:
-    """Простой консолидатор без LLM - использует эвристики."""
+    """Simple non-LLM consolidator using heuristics."""
 
     def extract_keywords(self, text: str, top_n: int = 10) -> list[str]:
-        """Извлекает ключевые слова через TF-IDF-like подход."""
-        words = re.findall(r"[а-яёa-zA-Z]{4,}", text.lower())
+        """Extract keywords using a light TF-IDF-like approach."""
+        words = re.findall(r"[^\W\d_]{4,}", text.lower(), flags=re.UNICODE)
 
         stop_words = {
+            # EN
+            "this",
+            "that",
+            "what",
+            "how",
+            "where",
+            "when",
+            "why",
+            "because",
+            "therefore",
+            "was",
+            "will",
+            "have",
+            "has",
+            "been",
+            "being",
+            "make",
+            "done",
+            # RU
             "это",
             "что",
             "как",
@@ -30,24 +73,24 @@ class FallbackConsolidator:
             "когда",
             "почему",
             "потому",
-            "therefore",
-            "this",
-            "that",
-            "what",
-            "how",
-            "where",
             "было",
             "будет",
             "есть",
             "быть",
             "иметь",
             "сделать",
-            "was",
-            "will",
-            "have",
-            "has",
-            "been",
-            "being",
+            # UK
+            "це",
+            "як",
+            "де",
+            "коли",
+            "чому",
+            "тому",
+            "було",
+            "буде",
+            "бути",
+            "мати",
+            "зробити",
         }
 
         filtered = [w for w in words if w not in stop_words]
@@ -55,13 +98,13 @@ class FallbackConsolidator:
         return [word for word, _ in counter.most_common(top_n)]
 
     def extract_preferences(self, text: str) -> list[dict]:
-        """Извлекает простые паттерны preferences из текста."""
+        """Extract simple preference patterns from text."""
         preferences = []
 
         for pattern, ptype in PREFERENCE_PATTERNS:
             matches = re.finditer(pattern, text.lower())
             for match in matches:
-                value = match.group(2).strip() if match.lastindex >= 2 else match.group(1).strip()
+                value = (match.groupdict().get("value") or "").strip()
                 if value and len(value) > 2:
                     preferences.append(
                         {
@@ -74,7 +117,7 @@ class FallbackConsolidator:
         return preferences[:10]
 
     def summarize(self, text: str, max_sentences: int = 3) -> str:
-        """Простое summary - первые предложения."""
+        """Simple summary - keep the first sentences."""
         sentences = re.split(r"[.!?]+", text)
         sentences = [s.strip() for s in sentences if s.strip()]
 
@@ -84,7 +127,7 @@ class FallbackConsolidator:
         return ". ".join(sentences[:max_sentences]) + "."
 
     def consolidate_episodes(self, episodes: list[dict]) -> dict:
-        """Консолидирует эпизоды в lessons/preferences через простую логику."""
+        """Consolidate episodes into lessons/preferences using simple logic."""
         if not episodes:
             return {"ok": True, "lessons": [], "preferences": []}
 
@@ -101,7 +144,7 @@ class FallbackConsolidator:
             lessons.append(
                 {
                     "key": f"topic_{keywords[0]}",
-                    "value": f"Обсуждались темы: {', '.join(keywords[:5])}",
+                    "value": f"Discussed topics: {', '.join(keywords[:5])}",
                     "meta": {"keywords": keywords, "type": "auto_fallback"},
                 }
             )

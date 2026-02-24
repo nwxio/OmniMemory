@@ -2,7 +2,7 @@
 
 services:
   # ===========================================
-  # PostgreSQL - Основная база данных
+  # PostgreSQL - Primary database
   # ===========================================
   ai_postgres:
     image: postgres:15-alpine
@@ -10,32 +10,32 @@ services:
     restart: unless-stopped
     
     environment:
-      # Учётные данные PostgreSQL
+      # PostgreSQL credentials
       POSTGRES_USER: memory_user
       POSTGRES_PASSWORD: SecureP@ssw0rd_2024!MemoryDB
       POSTGRES_DB: memory
-      
-      # Настройки производительности
-      # Выделено 25% от доступной RAM (при 4GB = 1GB)
+
+      # Performance settings
+      # Allocated 25% of available RAM (with 4GB = 1GB)
       POSTGRES_SHARED_BUFFERS: 256MB
       POSTGRES_EFFECTIVE_CACHE_SIZE: 768MB
       POSTGRES_MAINTENANCE_WORK_MEM: 64MB
       POSTGRES_WORK_MEM: 4MB
-      
-      # WAL настройки для надёжности
+
+      # WAL settings for durability
       POSTGRES_WAL_LEVEL: replica
       POSTGRES_MAX_WAL_SENDERS: 3
       POSTGRES_WAL_KEEP_SIZE: 64MB
-      
-      # Логирование
+
+      # Logging
       POSTGRES_LOG_STATEMENT: ddl
       POSTGRES_LOG_MIN_DURATION_STATEMENT: 1000
-    
+
     volumes:
-      # Постоянное хранилище данных
+      # Persistent data storage
       - postgres_data:/var/lib/postgresql/data
-      
-      # Кастомная конфигурация
+
+      # Custom configuration
       - ./docker/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     
     ports:
@@ -65,7 +65,7 @@ services:
       -c log_min_duration_statement=1000
 
   # ===========================================
-  # Redis - Кэширование и rate limiting
+  # Redis - Caching and rate limiting
   # ===========================================
   ai_redis:
     image: redis:7-alpine
@@ -83,7 +83,7 @@ services:
       --save 60 10000
     
     volumes:
-      # Постоянное хранилище для RDB/AOF
+      # Persistent storage for RDB/AOF
       - redis_data:/data
     
     ports:
@@ -100,7 +100,7 @@ services:
       start_period: 10s
 
   # ===========================================
-  # pgAdmin - Веб-интерфейс для PostgreSQL (опционально)
+  # pgAdmin - Web UI for PostgreSQL (optional)
   # ===========================================
   pgadmin:
     image: dpage/pgadmin4:latest

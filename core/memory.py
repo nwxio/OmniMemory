@@ -2029,6 +2029,15 @@ Rules:
         fb_lower = feedback.lower()
 
         corrections = [
+            # EN
+            ("not ", "not "),
+            ("cannot", "cannot"),
+            ("won't", "won't"),
+            ("don't want", "don't want"),
+            ("don't like", "don't like"),
+            ("this is not", "this is not"),
+            ("changed my mind", "changed my mind"),
+            # RU
             ("не ", "not "),
             ("нельзя", "cannot"),
             ("не буду", "won't"),
@@ -2036,14 +2045,24 @@ Rules:
             ("не люблю", "don't like"),
             ("это не", "this is not"),
             ("передумал", "changed my mind"),
+            ("передумала", "changed my mind"),
+            # UK
+            ("не ", "not "),
+            ("не можна", "cannot"),
+            ("не буду", "won't"),
+            ("не хочу", "don't want"),
+            ("не люблю", "don't like"),
+            ("це не", "this is not"),
+            ("передумав", "changed my mind"),
+            ("передумала", "changed my mind"),
         ]
 
-        for ru, en in corrections:
-            if ru in fb_lower:
-                parts = fb_lower.split(ru)
+        for source_phrase, normalized_phrase in corrections:
+            if source_phrase in fb_lower:
+                parts = fb_lower.split(source_phrase)
                 if len(parts) > 1:
                     key_part = parts[0].strip()
-                    value_part = ru.join(parts[1:]).strip()
+                    value_part = normalized_phrase.join(parts[1:]).strip()
 
                     key = self._extract_key_from_text(key_part)
                     if key:
@@ -2054,11 +2073,31 @@ Rules:
                             scope="global",
                         )
 
-        add_patterns = ["я ", "мой ", "моя ", "я работаю", "я живу"]
+        add_patterns = [
+            # EN
+            "i ",
+            "my ",
+            "i work",
+            "i live",
+            # RU
+            "я ",
+            "мой ",
+            "моя ",
+            "моё ",
+            "я работаю",
+            "я живу",
+            # UK
+            "я ",
+            "мій ",
+            "моя ",
+            "моє ",
+            "я працюю",
+            "я живу",
+        ]
         for pattern in add_patterns:
             if pattern in fb_lower:
-                idx = feedback.find(pattern)
-                after = feedback[idx + len(pattern) :].strip()
+                idx = fb_lower.find(pattern)
+                after = feedback[idx + len(pattern) :].strip() if idx >= 0 else ""
                 if after:
                     key = self._extract_key_from_text(after)
                     if key:
@@ -2078,16 +2117,29 @@ Rules:
         text = text.replace("?", "").replace("!", "").replace(".", "")
 
         replacements = {
+            # EN
+            "like": "like",
+            "love": "like",
+            "hate": "hate",
+            "prefer": "prefer",
+            "work at": "work_at",
+            "live in": "live_in",
+            # RU
             "люблю": "like",
+            "нравится": "like",
             "ненавижу": "hate",
             "предпочитаю": "prefer",
             "работаю в": "work_at",
             "живу в": "live_in",
-            "мне нравится": "like",
+            # UK
+            "подобається": "like",
+            "ненавиджу": "hate",
+            "віддаю перевагу": "prefer",
+            "працюю в": "work_at",
         }
 
-        for ru, en in replacements.items():
-            text = text.replace(ru, en)
+        for source_phrase, mapped in replacements.items():
+            text = text.replace(source_phrase, mapped)
 
         words = text.split()
         if words:
@@ -2100,8 +2152,19 @@ Rules:
         """Negate a value based on context."""
         value = value.strip().lower()
 
-        positive = ["кофе", "coffee", "чай", "tea", "да", "yes", "правда", "true"]
-        negative = ["нет", "no", "ложь", "false"]
+        positive = [
+            "coffee",
+            "tea",
+            "yes",
+            "true",
+            "кофе",
+            "чай",
+            "да",
+            "правда",
+            "кава",
+            "так",
+        ]
+        negative = ["no", "false", "нет", "ложь", "ні"]
 
         for p in positive:
             if p in value:

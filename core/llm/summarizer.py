@@ -31,26 +31,26 @@ class Summarizer:
             return self.fallback.summarize(text, max_sentences=3)
 
         if style == "bullet_points":
-            prompt = f"""Сделай краткую выжимку из текста в виде маркированного списка (5-7 пунктов):
+            prompt = f"""Create a concise bullet-point digest of this text (5-7 bullets):
 
 {text}
 
-Маркированный список:"""
-            system = "Ты ассистент, который создает структурированные заметки."
+Bullet list:"""
+            system = "You are an assistant that writes structured notes."
         elif style == "detailed":
-            prompt = f"""Сделай подробное резюме текста (2-3 параграфа):
+            prompt = f"""Write a detailed summary of this text (2-3 paragraphs):
 
 {text}
 
-Резюме:"""
-            system = "Ты ассистент, который создает подробные резюме."
+Summary:"""
+            system = "You are an assistant that writes detailed summaries."
         else:
-            prompt = f"""Сделай краткое резюме текста в 2-3 предложениях:
+            prompt = f"""Write a brief summary of this text in 2-3 sentences:
 
 {text}
 
-Резюме:"""
-            system = "Ты ассистент, который создает краткие резюме."
+Summary:"""
+            system = "You are an assistant that writes concise summaries."
 
         try:
             result = await llm_client.complete(
@@ -77,21 +77,21 @@ class Summarizer:
 
         episodes_text = "\n\n".join(
             [
-                f"Эпизод {i + 1}: {e.get('title', '')}\n{e.get('summary', '')}"
+                f"Episode {i + 1}: {e.get('title', '')}\n{e.get('summary', '')}"
                 for i, e in enumerate(limited)
             ]
         )
 
-        prompt = f"""Сделай краткое резюме этих эпизодов работы (3-4 предложения):
+        prompt = f"""Write a short summary of these work episodes (3-4 sentences):
 
 {episodes_text}
 
-Резюме:"""
+Summary:"""
 
         try:
             result = await llm_client.complete(
                 prompt=prompt,
-                system="Ты ассистент, который суммаризирует рабочие эпизоды.",
+                system="You are an assistant that summarizes work episodes.",
                 max_tokens=300,
                 temperature=0.3,
                 use_cache=True,
@@ -110,16 +110,16 @@ class Summarizer:
         if not text:
             return []
 
-        prompt = f"""Извлеки ключевые пункты из текста (не более {max_points}):
+        prompt = f"""Extract key points from this text (no more than {max_points}):
 
 {text}
 
-Ключевые пункты (маркированный список):"""
+Key points (bullet list):"""
 
         try:
             result = await llm_client.complete(
                 prompt=prompt,
-                system="Ты ассистент, который извлекает ключевые пункты.",
+                system="You are an assistant that extracts key points.",
                 max_tokens=500,
                 temperature=0.3,
                 use_cache=True,
@@ -155,41 +155,41 @@ class Summarizer:
 
         docs_text = "\n\n".join(
             [
-                f"Документ {i + 1} ({t.get('title', 'Без названия')}):\n{t.get('text', '')}"
+                f"Document {i + 1} ({t.get('title', 'Untitled')}):\n{t.get('text', '')}"
                 for i, t in enumerate(texts)
             ]
         )
 
         if focus == "differences":
-            prompt = f"""Сравни документы и выдели ключевые различия:
+            prompt = f"""Compare these documents and highlight key differences:
 
 {docs_text}
 
-Ключевые различия:"""
+Key differences:"""
         elif focus == "similarities":
-            prompt = f"""Сравни документы и выдели ключевые сходства:
+            prompt = f"""Compare these documents and highlight key similarities:
 
 {docs_text}
 
-Ключевые сходства:"""
+Key similarities:"""
         else:
-            prompt = f"""Сравни документы (сходства и различия):
+            prompt = f"""Compare these documents (similarities and differences):
 
 {docs_text}
 
-Сравнение:"""
+Comparison:"""
 
         try:
             result = await llm_client.complete(
                 prompt=prompt,
-                system="Ты ассистент, который сравнивает документы.",
+                system="You are an assistant that compares documents.",
                 max_tokens=800,
                 temperature=0.3,
                 use_cache=True,
             )
             return result.strip()
         except Exception:
-            return "Ошибка при сравнении документов."
+            return "Error while comparing documents."
 
 
 summarizer = Summarizer()

@@ -130,7 +130,7 @@ class LLMClient:
             except Exception as e:
                 last_exception = e
                 if attempt < max_retries:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(2**attempt)
 
         if last_exception is not None:
             raise last_exception
@@ -162,27 +162,27 @@ class LLMClient:
             [f"{e.get('title', '')}: {e.get('summary', '')}" for e in episodes]
         )
 
-        prompt = f"""Проанализируй эпизоды работы и извлеки уроки (lessons) и предпочтения (preferences).
+        prompt = f"""Analyze the work episodes and extract lessons and preferences.
 
-Эпизоды:
+Episodes:
 {combined_text}
 
-Верни результат в JSON формате:
+Return JSON in this format:
 {{
     "lessons": [
-        {{"key": "уникальный_ключ", "value": "описание урока", "meta": {{}}}}
+        {{"key": "unique_key", "value": "lesson description", "meta": {{}}}}
     ],
     "preferences": [
-        {{"key": "уникальный_ключ", "value": "описание предпочтения"}}
+        {{"key": "unique_key", "value": "preference description"}}
     ],
-    "summary": "краткое резюме"
+    "summary": "short summary"
 }}
 
-Верни только JSON без дополнительного текста."""
+Return only JSON without additional text."""
 
         system = (
-            "Ты AI ассистент, который анализирует рабочие сессии и "
-            "извлекает полезные уроки и предпочтения пользователя."
+            "You are an AI assistant that analyzes work sessions and "
+            "extracts useful lessons and user preferences."
         )
 
         try:
@@ -214,12 +214,14 @@ class LLMClient:
         if not episodes:
             return ""
 
-        combined_text = "\n".join([f"- {e.get('title', '')}: {e.get('summary', '')}" for e in episodes])
-        prompt = f"""Сделай краткое резюме этих эпизодов (2-3 предложения):
+        combined_text = "\n".join(
+            [f"- {e.get('title', '')}: {e.get('summary', '')}" for e in episodes]
+        )
+        prompt = f"""Write a brief summary of these episodes (2-3 sentences):
 
 {combined_text}
 
-Резюме:"""
+Summary:"""
 
         try:
             return await self.complete(prompt=prompt, max_tokens=200, temperature=0.3)
