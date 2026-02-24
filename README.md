@@ -44,6 +44,14 @@ This platform was actively developed and validated for OpenCode agent workflows.
 
 Diagram source notes: `docs/architecture.md`
 
+## Demo media
+
+![Overview screenshot](docs/screenshot-overview.png)
+
+![Tools screenshot](docs/screenshot-tools.png)
+
+![Demo GIF](docs/demo.gif)
+
 ## Architecture overview
 
 Core components:
@@ -363,6 +371,9 @@ python -m mypy core/security/audit.py core/security/gdpr.py core/search/bm25.py 
 - Docker deployment: `docker/README.md`
 - Install notes: `INSTALL.md`
 - Contributing guide: `CONTRIBUTING.md`
+- Code of conduct: `CODE_OF_CONDUCT.md`
+- Release process: `RELEASE_CHECKLIST.md`
+- Security policy: `SECURITY.md`
 
 ## License
 
