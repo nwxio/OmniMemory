@@ -30,7 +30,6 @@ This platform was actively developed and validated for OpenCode agent workflows.
 For reliable model behavior and correct memory usage, configure your agent with this prompt:
 
 - [Memory agent prompt](docs/memory-agent-prompt.md)
-- Open in a new window: <a href="docs/memory-agent-prompt.md" target="_blank" rel="noopener noreferrer">Memory agent prompt</a>
 
 ## Key capabilities
 
