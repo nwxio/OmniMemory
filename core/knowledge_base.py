@@ -12,6 +12,7 @@ from typing import Any, Optional
 from .db import db
 from .ids import new_id
 from .doc_parser import document_parser
+from .search_match import build_like_clause, query_tokens, score_fields
 
 
 def _utc_now() -> str:
@@ -260,14 +261,29 @@ class KnowledgeBase:
         Returns:
             List of matching documents
         """
+        q = (query or "").strip()
+        if not q:
+            return []
+
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+        clause, params = build_like_clause(["title", "content"], tokens, require_all_tokens=False)
+        if not clause:
+            return []
+
+        pool = max(int(limit) * 6, int(limit), 20)
+
         if session_id:
             async with db.connect() as conn:
                 cur = await conn.execute(
                     """SELECT id, title, source_type, source_url, content
                        FROM knowledge_base 
-                       WHERE session_id = ? AND content LIKE ?
+                       WHERE session_id = ? AND """
+                    + clause
+                    + """
                        ORDER BY created_at DESC LIMIT ?""",
-                    (session_id, f"%{query}%", limit),
+                    (session_id, *params, pool),
                 )
                 rows = await cur.fetchall()
         else:
@@ -275,35 +291,54 @@ class KnowledgeBase:
                 cur = await conn.execute(
                     """SELECT id, title, source_type, source_url, content
                        FROM knowledge_base 
-                       WHERE content LIKE ?
+                       WHERE """
+                    + clause
+                    + """
                        ORDER BY created_at DESC LIMIT ?""",
-                    (f"%{query}%", limit),
+                    (*params, pool),
                 )
                 rows = await cur.fetchall()
 
-        results = []
+        scored: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
-            # Find snippet
-            content = row["content"]
-            idx = content.lower().find(query.lower())
+            title = str(row["title"] or "")
+            content = str(row["content"] or "")
+            score = score_fields(q, [title, content], tokens=tokens)
+            if score <= 0.0:
+                continue
+
+            text_l = content.casefold()
+            query_l = q.casefold()
+            idx = text_l.find(query_l)
+            if idx < 0:
+                for tok in tokens:
+                    idx = text_l.find(tok)
+                    if idx >= 0:
+                        break
+
             if idx >= 0:
                 start = max(0, idx - 50)
-                end = min(len(content), idx + len(query) + 50)
+                end = min(len(content), idx + max(len(q), 8) + 50)
                 snippet = content[start:end]
             else:
                 snippet = content[:100]
 
-            results.append(
-                {
-                    "id": row["id"],
-                    "title": row["title"],
-                    "source_type": row["source_type"],
-                    "source_url": row["source_url"],
-                    "snippet": snippet,
-                }
+            scored.append(
+                (
+                    score,
+                    {
+                        "id": row["id"],
+                        "title": row["title"],
+                        "source_type": row["source_type"],
+                        "source_url": row["source_url"],
+                        "snippet": snippet,
+                        "search_score": float(score),
+                    },
+                )
             )
 
-        return results
+        scored.sort(key=lambda it: it[0], reverse=True)
+        return [item for _, item in scored[: int(limit)]]
 
     async def delete_document(self, doc_id: str) -> dict[str, Any]:
         """Delete a document."""

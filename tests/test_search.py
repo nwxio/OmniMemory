@@ -196,3 +196,26 @@ class TestSearchIntegration:
 
         assert search_settings.bm25_enabled is True
         assert search_settings.bm25_weight == 0.3
+
+
+class TestSearchMatchHelpers:
+    def test_query_tokens_multilingual(self):
+        from core.search_match import query_tokens
+
+        tokens = query_tokens("love likes любит кофе")
+        assert "love" in tokens
+        assert "любит" in tokens
+        assert "кофе" in tokens
+
+    def test_build_like_clause(self):
+        from core.search_match import build_like_clause
+
+        clause, params = build_like_clause(["title", "content"], ["memory", "search"])
+        assert "LOWER(title) LIKE ?" in clause
+        assert len(params) == 4
+
+    def test_score_fields_phrase_and_tokens(self):
+        from core.search_match import score_fields
+
+        score = score_fields("python backend", ["We use Python for backend services"])
+        assert score > 0

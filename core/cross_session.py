@@ -13,6 +13,7 @@ from typing import Any, Optional
 from .db import db
 from .config import settings
 from .redact import redact_text
+from .search_match import build_like_clause, query_tokens, score_fields
 
 
 def _utc_now() -> str:
@@ -287,11 +288,13 @@ class CrossSessionManager:
                 "SELECT id, title, summary, data_json FROM episodes WHERE session_id = ? ORDER BY created_at DESC",
                 (session_id,),
             )
-            rows = await cursor.fetchall()
+            rows_seq = await cursor.fetchall()
+
+        rows_list: list[Any] = [r for r in rows_seq]
 
         # Extract observations (simple heuristic: extract key info)
         observations = []
-        for row in rows:
+        for row in rows_list:
             data = json.loads(row["data_json"]) if row["data_json"] else {}
 
             if row["title"].startswith("Message:"):
@@ -306,7 +309,7 @@ class CrossSessionManager:
         observations_json = json.dumps(observations[:20])  # Limit
 
         # Generate summary (from episode titles)
-        summary_parts = [row["title"] for row in rows[:10]]
+        summary_parts = [row["title"] for row in rows_list[:10]]
         summary = " | ".join(summary_parts)
 
         # Update session - mark as completed AND ended
@@ -321,7 +324,7 @@ class CrossSessionManager:
 
         return FinalizationReport(
             session_id=session_id,
-            entries_stored=len(rows),
+            entries_stored=len(rows_list),
             observations_count=len(observations),
             summary=summary[:500],
         )
@@ -431,33 +434,75 @@ class CrossSessionManager:
 
         Uses simple text search in summaries and observations.
         """
+        q = (query or "").strip()
+        if not q:
+            return []
+
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+
+        clause, params = build_like_clause(
+            ["title", "summary", "observations_json"],
+            tokens,
+            require_all_tokens=False,
+        )
+        if not clause:
+            return []
+
+        pool = max(int(limit) * 6, int(limit), 20)
         async with db.connect() as conn:
             # Search in summaries and observations
             cursor = await conn.execute(
                 """SELECT id, title, summary, observations_json, ended_at, created_at
                    FROM sessions 
                    WHERE session_status IN (?, ?)
-                     AND (summary LIKE ? OR observations_json LIKE ?)
+                     AND """
+                + clause
+                + """
                    ORDER BY ended_at DESC
                    LIMIT ?""",
-                (SESSION_STATUS_COMPLETED, SESSION_STATUS_ENDED, f"%{query}%", f"%{query}%", limit),
+                (SESSION_STATUS_COMPLETED, SESSION_STATUS_ENDED, *params, pool),
             )
             rows = await cursor.fetchall()
 
-        results = []
+        scored: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
-            results.append(
-                {
-                    "session_id": row["id"],
-                    "title": row["title"],
-                    "summary": row["summary"],
-                    "observations": json.loads(row["observations_json"])
-                    if row["observations_json"]
-                    else [],
-                    "ended_at": row["ended_at"],
-                    "created_at": row["created_at"],
-                }
+            observations = []
+            try:
+                observations = (
+                    json.loads(row["observations_json"]) if row["observations_json"] else []
+                )
+            except Exception:
+                observations = []
+
+            score = score_fields(
+                q,
+                [
+                    str(row["title"] or ""),
+                    str(row["summary"] or ""),
+                    "\n".join(str(x) for x in (observations or [])),
+                ],
+                tokens=tokens,
             )
+            if score <= 0.0:
+                continue
+
+            item = {
+                "session_id": row["id"],
+                "title": row["title"],
+                "summary": row["summary"],
+                "observations": observations,
+                "ended_at": row["ended_at"],
+                "created_at": row["created_at"],
+                "search_score": float(score),
+            }
+            scored.append((score, item))
+
+        scored.sort(key=lambda it: (it[0], str(it[1].get("ended_at") or "")), reverse=True)
+        results: list[dict[str, Any]] = []
+        for _, item in scored[: int(limit)]:
+            results.append(item)
 
         return results
 

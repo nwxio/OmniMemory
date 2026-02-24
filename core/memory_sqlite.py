@@ -14,6 +14,7 @@ from .config import settings
 from .db import db, dumps, fetch_one, fetch_all
 from .ids import new_id
 from .redact import redact_text, redact_dict
+from .search_match import build_like_clause, query_tokens, score_fields
 
 
 def _row_get(row: Any, name: str, default: Any = None) -> Any:
@@ -1171,32 +1172,52 @@ class MemorySQL:
         q = (query or "").strip()
         if not session_id or not q:
             return []
-        like = f"%{q}%"
+
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+        clause, params = build_like_clause(["title", "summary"], tokens, require_all_tokens=False)
+        if not clause:
+            return []
+
+        pool = max(int(limit) * 6, int(limit), 20)
         async with db.connect() as conn:
             rows = await fetch_all(
                 conn,
                 """
                 SELECT id, task_id, created_at, title, summary, tags_json
                 FROM episodes
-                WHERE session_id=? AND (title LIKE ? OR summary LIKE ?)
+                WHERE session_id=? AND
+                """
+                + clause
+                + """
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (session_id, like, like, int(limit)),
+                (session_id, *params, int(pool)),
             )
-        out: List[Dict[str, Any]] = []
+        scored: List[tuple[float, Dict[str, Any]]] = []
         for r in rows:
-            out.append(
-                {
-                    "id": r["id"],
-                    "task_id": r["task_id"],
-                    "created_at": r["created_at"],
-                    "title": r["title"],
-                    "summary": r["summary"],
-                    "tags": json.loads(r["tags_json"]),
-                }
+            score = score_fields(
+                q,
+                [str(r["title"] or ""), str(r["summary"] or "")],
+                tokens=tokens,
             )
-        return out
+            if score <= 0.0:
+                continue
+            item = {
+                "id": r["id"],
+                "task_id": r["task_id"],
+                "created_at": r["created_at"],
+                "title": r["title"],
+                "summary": r["summary"],
+                "tags": json.loads(r["tags_json"]),
+                "search_score": float(score),
+            }
+            scored.append((score, item))
+
+        scored.sort(key=lambda it: (it[0], str(it[1].get("created_at") or "")), reverse=True)
+        return [item for _, item in scored[: int(limit)]]
 
     async def get_index_state(self, name: str) -> Dict[str, Any]:
         name = (name or "").strip()
@@ -2250,26 +2271,49 @@ class MemorySQL:
 
     async def search_procedures(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search procedures by title or content."""
+        q = (query or "").strip()
+        if not q:
+            return []
+
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+        clause, params = build_like_clause(["title", "steps"], tokens, require_all_tokens=False)
+        if not clause:
+            return []
+
+        pool = max(int(limit) * 6, int(limit), 20)
         async with db.connect() as conn:
             rows = await fetch_all(
                 conn,
                 """SELECT key, title, steps, metadata, created_at, updated_at FROM procedural_memory
-                   WHERE title LIKE ? OR steps LIKE ? LIMIT ?""",
-                (f"%{query}%", f"%{query}%", limit),
+                   WHERE """
+                + clause
+                + """ LIMIT ?""",
+                (*params, pool),
             )
-        out = []
+        scored: List[tuple[float, Dict[str, Any]]] = []
         for r in rows:
-            out.append(
-                {
-                    "key": r["key"],
-                    "title": r["title"],
-                    "steps": json.loads(r["steps"]),
-                    "metadata": json.loads(r["metadata"]),
-                    "created_at": r["created_at"],
-                    "updated_at": r["updated_at"],
-                }
+            score = score_fields(
+                q,
+                [str(r["title"] or ""), str(r["steps"] or "")],
+                tokens=tokens,
             )
-        return out
+            if score <= 0.0:
+                continue
+            item = {
+                "key": r["key"],
+                "title": r["title"],
+                "steps": json.loads(r["steps"]),
+                "metadata": json.loads(r["metadata"]),
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "search_score": float(score),
+            }
+            scored.append((score, item))
+
+        scored.sort(key=lambda it: (it[0], str(it[1].get("updated_at") or "")), reverse=True)
+        return [item for _, item in scored[: int(limit)]]
 
     async def list_procedures(self, limit: int = 50) -> List[Dict[str, Any]]:
         """List all procedures."""
@@ -2343,26 +2387,58 @@ class MemorySQL:
 
     async def search_entities(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Search entities by name or type."""
+        q = (query or "").strip()
+        if not q:
+            return []
+
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+        clause, params = build_like_clause(
+            ["name", "entity_type", "properties"],
+            tokens,
+            require_all_tokens=False,
+        )
+        if not clause:
+            return []
+
+        pool = max(int(limit) * 6, int(limit), 20)
         async with db.connect() as conn:
             rows = await fetch_all(
                 conn,
                 """SELECT id, name, entity_type, properties, created_at, updated_at FROM semantic_entities
-                   WHERE name LIKE ? OR entity_type LIKE ? LIMIT ?""",
-                (f"%{query}%", f"%{query}%", limit),
+                   WHERE """
+                + clause
+                + """ LIMIT ?""",
+                (*params, pool),
             )
-        out = []
+        scored: List[tuple[float, Dict[str, Any]]] = []
         for r in rows:
-            out.append(
-                {
-                    "id": r["id"],
-                    "name": r["name"],
-                    "entity_type": r["entity_type"],
-                    "properties": json.loads(r["properties"]),
-                    "created_at": r["created_at"],
-                    "updated_at": r["updated_at"],
-                }
+            props = json.loads(r["properties"])
+            score = score_fields(
+                q,
+                [
+                    str(r["name"] or ""),
+                    str(r["entity_type"] or ""),
+                    json.dumps(props, ensure_ascii=False),
+                ],
+                tokens=tokens,
             )
-        return out
+            if score <= 0.0:
+                continue
+            item = {
+                "id": r["id"],
+                "name": r["name"],
+                "entity_type": r["entity_type"],
+                "properties": props,
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "search_score": float(score),
+            }
+            scored.append((score, item))
+
+        scored.sort(key=lambda it: (it[0], str(it[1].get("updated_at") or "")), reverse=True)
+        return [item for _, item in scored[: int(limit)]]
 
     async def add_relation(
         self,

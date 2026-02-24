@@ -6,9 +6,11 @@ from functools import wraps
 from typing import Any, Dict, List, Optional
 from mcp.server.fastmcp import FastMCP
 
+from core.config import settings
 from core.db import init_db
 from core.memory import MemoryStore
 from core.metrics import metrics, request_metrics
+from core.search_match import query_tokens, score_fields
 from core.security.rate_limit import distributed_rate_limiter
 
 mcp = FastMCP("omnimind-memory")
@@ -59,12 +61,35 @@ def _with_db_ready(fn):
     return _wrapped
 
 
+def _sort_by_score(
+    items: List[Dict[str, Any]], *, score_key: str = "search_score"
+) -> List[Dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda x: (
+            float(x.get(score_key) or 0.0),
+            str(x.get("updated_at") or x.get("created_at") or ""),
+        ),
+        reverse=True,
+    )
+
+
 @mcp.tool()
 @_with_db_ready
 async def memory_search(query: str, limit: int = 8) -> List[Dict[str, Any]]:
     """Hybrid search: combine FTS keyword and vector semantic search."""
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    # Ensure workspace FTS is available; operation is throttled in storage layer.
+    try:
+        await memory.ensure_indexed(getattr(settings, "workspace", "/workspace"))
+    except Exception:
+        pass
+
     # Uses unified hybrid path (BM25/query-expansion/rerank settings aware).
-    hits = await memory.search_hybrid(query, limit=limit)
+    hits = await memory.search_hybrid(q, limit=limit)
     return [
         {
             "source": h.source,
@@ -80,51 +105,232 @@ async def memory_search(query: str, limit: int = 8) -> List[Dict[str, Any]]:
 @_with_db_ready
 async def memory_search_lessons(query: str, limit: int = 20) -> List[Dict[str, Any]]:
     """Search lessons by query string."""
-    return await memory.search_lessons(query=query, limit=limit)
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    pool = max(int(limit) * 3, int(limit), 20)
+    lessons = await memory.search_lessons(query=q, limit=pool)
+    if lessons:
+        out = []
+        tokens = query_tokens(q, max_terms=12)
+        for item in lessons:
+            score = score_fields(
+                q,
+                [str(item.get("key") or ""), str(item.get("lesson") or "")],
+                tokens=tokens,
+            )
+            # FTS BM25 rank: lower is better.
+            rank = float(item.get("rank") or 0.0)
+            score += 1.0 / (1.0 + max(0.0, rank))
+            if score <= 0.0:
+                continue
+            it2 = dict(item)
+            it2["search_score"] = float(score)
+            out.append(it2)
+        return _sort_by_score(out)[: int(limit)]
+
+    # Fallback: lexical scan over recent lessons.
+    fallback = await memory.list_lessons(limit=max(100, pool))
+    tokens = query_tokens(q, max_terms=12)
+    out = []
+    for item in fallback:
+        score = score_fields(
+            q,
+            [str(item.get("key") or ""), str(item.get("lesson") or "")],
+            tokens=tokens,
+        )
+        if score <= 0.0:
+            continue
+        it2 = dict(item)
+        it2["search_score"] = float(score)
+        out.append(it2)
+    return _sort_by_score(out)[: int(limit)]
 
 
 @mcp.tool()
 @_with_db_ready
 async def memory_search_preferences(query: str, limit: int = 20) -> List[Dict[str, Any]]:
     """Search preferences by key prefix or value content."""
-    prefs = await memory.list_preferences(scope="global", session_id=None, limit=100)
-    q = (query or "").lower().strip()
+    prefs = await memory.list_preferences(scope="global", session_id=None, limit=500)
+    q = (query or "").strip()
     if not q:
         return prefs[:limit]
-    results = []
+
+    tokens = query_tokens(q, max_terms=12)
+    if not tokens:
+        tokens = [q.casefold()]
+
+    results: List[Dict[str, Any]] = []
     for p in prefs:
-        key = str(p.get("key", "")).lower()
-        value = str(p.get("value", "")).lower()
-        if q in key or q in value:
-            results.append(p)
-            if len(results) >= limit:
-                break
-    return results
+        score = score_fields(
+            q,
+            [str(p.get("key") or ""), str(p.get("value") or "")],
+            tokens=tokens,
+        )
+        if score <= 0.0:
+            continue
+        item = dict(p)
+        item["search_score"] = float(score)
+        results.append(item)
+
+    return _sort_by_score(results)[: int(limit)]
 
 
 @mcp.tool()
 @_with_db_ready
 async def memory_search_all(query: str, limit: int = 10) -> Dict[str, Any]:
-    """Search across lessons AND preferences. Returns combined results.
+    """Federated search across memory domains.
 
-    Use this when looking for user preferences or lessons by keywords.
+    Keeps backward compatibility (`lessons`, `preferences`) and adds
+    broader result buckets for easier retrieval.
     """
-    results: Dict[str, Any] = {"lessons": [], "preferences": []}
+    q = (query or "").strip()
+    out: Dict[str, Any] = {
+        "lessons": [],
+        "preferences": [],
+        "procedures": [],
+        "entities": [],
+        "kb_documents": [],
+        "kg_entities": [],
+        "extracted_memories": [],
+        "cross_sessions": [],
+        "workspace": [],
+        "top": [],
+    }
+    if not q:
+        return out
 
-    lessons = await memory.search_lessons(query=query, limit=limit)
-    results["lessons"] = lessons
+    tokens = query_tokens(q, max_terms=12)
+    pool = max(int(limit) * 4, int(limit), 20)
 
-    prefs = await memory.list_preferences(scope="global", session_id=None, limit=100)
-    q = (query or "").lower().strip()
-    for p in prefs:
-        key = str(p.get("key", "")).lower()
-        value = str(p.get("value", "")).lower()
-        if q in key or q in value:
-            results["preferences"].append(p)
-            if len(results["preferences"]) >= limit:
-                break
+    async def _safe(coro):
+        try:
+            return await coro
+        except Exception:
+            return []
 
-    return results
+    # Ensure workspace index exists before hybrid search.
+    try:
+        await memory.ensure_indexed(getattr(settings, "workspace", "/workspace"))
+    except Exception:
+        pass
+
+    (
+        lessons,
+        preferences,
+        procedures,
+        entities,
+        kb_docs,
+        kg_entities,
+        extracted,
+        sessions,
+        workspace_hits,
+    ) = await asyncio.gather(
+        _safe(memory.search_lessons(query=q, limit=pool)),
+        _safe(memory.list_preferences(scope="global", session_id=None, limit=500)),
+        _safe(memory.search_procedures(query=q, limit=pool)),
+        _safe(memory.search_entities(query=q, limit=pool)),
+        _safe(memory.kb_search_documents(query=q, session_id=None, limit=pool)),
+        _safe(memory.kg_search_entities(query=q, entity_type=None, limit=pool)),
+        _safe(memory.search_extracted_memories(query=q, entity_id=None, limit=pool)),
+        _safe(memory.cross_session_search(query=q, limit=pool)),
+        _safe(memory.search_hybrid(query=q, limit=pool)),
+    )
+
+    # lessons
+    lesson_items: List[Dict[str, Any]] = []
+    for it in lessons:
+        score = score_fields(
+            q, [str(it.get("key") or ""), str(it.get("lesson") or "")], tokens=tokens
+        )
+        score += 1.0 / (1.0 + max(0.0, float(it.get("rank") or 0.0)))
+        if score <= 0.0:
+            continue
+        row = dict(it)
+        row["search_score"] = float(score)
+        lesson_items.append(row)
+    out["lessons"] = _sort_by_score(lesson_items)[: int(limit)]
+
+    # preferences
+    pref_items: List[Dict[str, Any]] = []
+    for it in preferences:
+        score = score_fields(
+            q, [str(it.get("key") or ""), str(it.get("value") or "")], tokens=tokens
+        )
+        if score <= 0.0:
+            continue
+        row = dict(it)
+        row["search_score"] = float(score)
+        pref_items.append(row)
+    out["preferences"] = _sort_by_score(pref_items)[: int(limit)]
+
+    # procedures / semantic entities / kb / kg / extracted / cross-session
+    def _score_bucket(items: List[Dict[str, Any]], fields: List[str]) -> List[Dict[str, Any]]:
+        scored: List[Dict[str, Any]] = []
+        for it in items:
+            vals = [str(it.get(f) or "") for f in fields]
+            score = score_fields(q, vals, tokens=tokens)
+            if score <= 0.0:
+                continue
+            row = dict(it)
+            row["search_score"] = float(score)
+            scored.append(row)
+        return _sort_by_score(scored)[: int(limit)]
+
+    out["procedures"] = _score_bucket(procedures, ["key", "title", "steps"])
+    out["entities"] = _score_bucket(entities, ["name", "entity_type"])
+    out["kb_documents"] = _score_bucket(kb_docs, ["title", "snippet"])
+    out["kg_entities"] = _score_bucket(kg_entities, ["name", "type", "role"])
+    out["extracted_memories"] = _score_bucket(extracted, ["memory_type", "content", "entity_id"])
+    out["cross_sessions"] = _score_bucket(sessions, ["title", "summary", "observations"])
+
+    # workspace hits
+    ws_items: List[Dict[str, Any]] = []
+    for h in workspace_hits:
+        text = str(h.text or "")
+        meta = dict(h.meta or {})
+        score = float(h.score or 0.0)
+        score += score_fields(q, [text, str(meta.get("path") or "")], tokens=tokens) * 0.2
+        if score <= 0.0:
+            continue
+        ws_items.append(
+            {
+                "source": h.source,
+                "text": text,
+                "path": meta.get("path"),
+                "meta": meta,
+                "search_score": float(score),
+            }
+        )
+    out["workspace"] = _sort_by_score(ws_items)[: int(limit)]
+
+    # Unified top list for model-friendly consumption.
+    top: List[Dict[str, Any]] = []
+    buckets = {
+        "lessons": out["lessons"],
+        "preferences": out["preferences"],
+        "procedures": out["procedures"],
+        "entities": out["entities"],
+        "kb_documents": out["kb_documents"],
+        "kg_entities": out["kg_entities"],
+        "extracted_memories": out["extracted_memories"],
+        "cross_sessions": out["cross_sessions"],
+        "workspace": out["workspace"],
+    }
+    for source, items in buckets.items():
+        for it in items:
+            top.append(
+                {
+                    "source": source,
+                    "score": float(it.get("search_score") or 0.0),
+                    "item": it,
+                }
+            )
+    top.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+    out["top"] = top[: max(int(limit) * 3, int(limit))]
+
+    return out
 
 
 @mcp.tool()

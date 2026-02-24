@@ -9,6 +9,7 @@ from .db import db
 from .ids import new_id
 from .config import settings
 from .redact import redact_text
+from .search_match import build_like_clause, query_tokens, score_fields
 
 
 def _utc_now() -> str:
@@ -197,18 +198,33 @@ class ConversationStore:
         Returns:
             List of matching messages
         """
+        q = (query or "").strip()
+        if not session_id or not q:
+            return []
+
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+
+        clause, params = build_like_clause(["content"], tokens, require_all_tokens=False)
+        if not clause:
+            return []
+
+        pool = max(int(limit) * 6, int(limit), 20)
         async with db.connect() as conn:
             cur = await conn.execute(
                 """SELECT id, session_id, created_at, role, content, model, tokens, metadata_json
                    FROM conversations 
-                   WHERE session_id = ? AND content LIKE ?
+                   WHERE session_id = ? AND """
+                + clause
+                + """
                    ORDER BY created_at DESC
                    LIMIT ?""",
-                (session_id, f"%{query}%", limit),
+                (session_id, *params, pool),
             )
             rows = await cur.fetchall()
 
-        messages = []
+        scored: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
             meta = {}
             try:
@@ -217,18 +233,25 @@ class ConversationStore:
             except Exception:
                 pass
 
-            messages.append(
-                {
-                    "id": row["id"],
-                    "session_id": row["session_id"],
-                    "created_at": row["created_at"],
-                    "role": row["role"],
-                    "content": row["content"],
-                    "model": row["model"],
-                    "tokens": row["tokens"],
-                    "metadata": meta,
-                }
-            )
+            item = {
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "created_at": row["created_at"],
+                "role": row["role"],
+                "content": row["content"],
+                "model": row["model"],
+                "tokens": row["tokens"],
+                "metadata": meta,
+            }
+            score = score_fields(q, [str(row["content"] or "")], tokens=tokens)
+            if score > 0.0:
+                scored.append((score, item))
+
+        scored.sort(key=lambda it: (it[0], str(it[1].get("created_at") or "")), reverse=True)
+        messages: list[dict[str, Any]] = []
+        for score, item in scored[: int(limit)]:
+            item["search_score"] = float(score)
+            messages.append(item)
 
         return messages
 

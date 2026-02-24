@@ -28,6 +28,7 @@ from typing import Any, Optional
 from .db import db
 from .ids import new_id
 from .knowledge_graph import knowledge_graph, Triple
+from .search_match import build_like_clause, query_tokens, score_fields
 
 
 def _utc_now() -> str:
@@ -390,42 +391,75 @@ class MemoryExtractor:
         Returns:
             List of matching memories
         """
+        q = (query or "").strip()
+        if not q:
+            return []
+
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+        clause, params = build_like_clause(["content"], tokens, require_all_tokens=False)
+        if not clause:
+            return []
+
+        pool = max(int(limit) * 6, int(limit), 20)
+
         async with db.connect() as conn:
             if entity_id:
                 cur = await conn.execute(
                     """SELECT * FROM extracted_memories 
-                       WHERE entity_id = ? AND content LIKE ?
+                       WHERE entity_id = ? AND """
+                    + clause
+                    + """
                        ORDER BY confidence DESC LIMIT ?""",
-                    (entity_id, f"%{query}%", limit),
+                    (entity_id, *params, pool),
                 )
             else:
                 cur = await conn.execute(
                     """SELECT * FROM extracted_memories 
-                       WHERE content LIKE ?
+                       WHERE """
+                    + clause
+                    + """
                        ORDER BY confidence DESC LIMIT ?""",
-                    (f"%{query}%", limit),
+                    (*params, pool),
                 )
             rows = await cur.fetchall()
 
-        results = []
+        scored: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
-            results.append(
-                {
-                    "id": row["id"],
-                    "entity_id": row["entity_id"],
-                    "memory_type": row["memory_type"],
-                    "content": row["content"],
-                    "confidence": row["confidence"],
-                }
+            content = str(row["content"] or "")
+            score = score_fields(q, [content, str(row["memory_type"] or "")], tokens=tokens)
+            if score <= 0.0:
+                continue
+            score += float(row["confidence"] or 0.0) * 0.1
+
+            scored.append(
+                (
+                    score,
+                    {
+                        "id": row["id"],
+                        "entity_id": row["entity_id"],
+                        "memory_type": row["memory_type"],
+                        "content": row["content"],
+                        "confidence": row["confidence"],
+                        "search_score": float(score),
+                    },
+                )
             )
 
-        return results
+        scored.sort(key=lambda it: it[0], reverse=True)
+        return [item for _, item in scored[: int(limit)]]
 
     async def get_stats(self) -> dict[str, Any]:
         """Get extraction statistics."""
         async with db.connect() as conn:
             cur = await conn.execute("SELECT COUNT(*) as c FROM extracted_memories")
-            total = (await cur.fetchone())["c"]
+            row_total = await cur.fetchone()
+            total = 0
+            if row_total is not None:
+                total_raw = row_total["c"]
+                if total_raw is not None:
+                    total = int(total_raw)
 
             cur = await conn.execute(
                 "SELECT memory_type, COUNT(*) as c FROM extracted_memories GROUP BY memory_type"
@@ -435,7 +469,12 @@ class MemoryExtractor:
             cur = await conn.execute(
                 "SELECT COUNT(DISTINCT entity_id) as c FROM extracted_memories"
             )
-            entities = (await cur.fetchone())["c"]
+            row_entities = await cur.fetchone()
+            entities = 0
+            if row_entities is not None:
+                entities_raw = row_entities["c"]
+                if entities_raw is not None:
+                    entities = int(entities_raw)
 
         return {
             "total_memories": total,

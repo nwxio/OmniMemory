@@ -20,6 +20,7 @@ from typing import Any, Optional
 from .db import db
 from .ids import new_id
 from .config import settings
+from .search_match import build_like_clause, query_tokens, score_fields
 
 _neo4j_backend: Any = None
 
@@ -377,31 +378,55 @@ class KnowledgeGraph:
         if neo4j is None:
             raise RuntimeError("neo4j backend is not active")
 
+        q = (query or "").strip()
+        if not q:
+            return []
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+
+        pool = max(1, int(limit) * 6)
+
         rows = await neo4j.query(
             """
             MATCH (n:Entity)
-            WHERE toLower(n.name) CONTAINS toLower($query)
+            WHERE any(tok IN $tokens WHERE toLower(n.name) CONTAINS tok)
               AND ($entity_type IS NULL OR n.entity_type = $entity_type)
             RETURN n.name AS name, n.entity_type AS type, coalesce(n.mention_count, 0) AS mention_count
             ORDER BY mention_count DESC
             LIMIT $limit
             """,
             {
-                "query": query,
+                "tokens": tokens,
                 "entity_type": entity_type,
-                "limit": max(1, int(limit)),
+                "limit": pool,
             },
         )
-        return [
-            {
-                "name": row.get("name"),
-                "type": row.get("type"),
-                "mention_count": row.get("mention_count", 0),
-                "role": "entity",
-            }
-            for row in rows
-            if row.get("name")
-        ]
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for row in rows:
+            name = str(row.get("name") or "")
+            if not name:
+                continue
+            etype = str(row.get("type") or "")
+            mention_count = int(row.get("mention_count", 0) or 0)
+            score = score_fields(q, [name, etype], tokens=tokens) + float(mention_count) * 0.01
+            if score <= 0.0:
+                continue
+            scored.append(
+                (
+                    score,
+                    {
+                        "name": name,
+                        "type": etype,
+                        "mention_count": mention_count,
+                        "role": "entity",
+                        "search_score": float(score),
+                    },
+                )
+            )
+
+        scored.sort(key=lambda it: it[0], reverse=True)
+        return [item for _, item in scored[: int(limit)]]
 
     async def _get_stats_neo4j(self) -> dict[str, Any]:
         neo4j = self._neo4j_backend()
@@ -886,24 +911,40 @@ class KnowledgeGraph:
         if self._neo4j_backend() is not None:
             return await self._search_entities_neo4j(query, entity_type, limit)
 
+        q = (query or "").strip()
+        if not q:
+            return []
+        tokens = query_tokens(q, max_terms=10)
+        if not tokens:
+            tokens = [q.casefold()]
+
+        clause, params = build_like_clause(["name"], tokens, require_all_tokens=False)
+        if not clause:
+            return []
+
+        pool = max(int(limit) * 6, int(limit), 20)
         results = []
-        query_lower = f"%{query.lower()}%"
 
         async with db.connect() as conn:
             # Search subjects
             if entity_type:
                 cur = await conn.execute(
                     """SELECT name, entity_type, mention_count FROM kg_subjects 
-                       WHERE LOWER(name) LIKE ? AND entity_type = ?
+                       WHERE """
+                    + clause
+                    + """
+                       AND entity_type = ?
                        ORDER BY mention_count DESC LIMIT ?""",
-                    (query_lower, entity_type, limit),
+                    (*params, entity_type, pool),
                 )
             else:
                 cur = await conn.execute(
                     """SELECT name, entity_type, mention_count FROM kg_subjects 
-                       WHERE LOWER(name) LIKE ?
+                       WHERE """
+                    + clause
+                    + """
                        ORDER BY mention_count DESC LIMIT ?""",
-                    (query_lower, limit),
+                    (*params, pool),
                 )
 
             for row in await cur.fetchall():
@@ -920,16 +961,21 @@ class KnowledgeGraph:
             if entity_type:
                 cur = await conn.execute(
                     """SELECT name, entity_type, mention_count FROM kg_objects 
-                       WHERE LOWER(name) LIKE ? AND entity_type = ?
+                       WHERE """
+                    + clause
+                    + """
+                       AND entity_type = ?
                        ORDER BY mention_count DESC LIMIT ?""",
-                    (query_lower, entity_type, limit),
+                    (*params, entity_type, pool),
                 )
             else:
                 cur = await conn.execute(
                     """SELECT name, entity_type, mention_count FROM kg_objects 
-                       WHERE LOWER(name) LIKE ?
+                       WHERE """
+                    + clause
+                    + """
                        ORDER BY mention_count DESC LIMIT ?""",
-                    (query_lower, limit),
+                    (*params, pool),
                 )
 
             for row in await cur.fetchall():
@@ -942,7 +988,7 @@ class KnowledgeGraph:
                     }
                 )
 
-        # Dedupe by name
+        # Dedupe by name, then rank by lexical score + mention_count.
         seen = set()
         unique_results = []
         for r in results:
@@ -950,7 +996,20 @@ class KnowledgeGraph:
                 seen.add(r["name"])
                 unique_results.append(r)
 
-        return unique_results[:limit]
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for item in unique_results:
+            score = score_fields(
+                q, [str(item.get("name") or ""), str(item.get("type") or "")], tokens=tokens
+            )
+            score += float(item.get("mention_count") or 0) * 0.01
+            if score <= 0.0:
+                continue
+            it2 = dict(item)
+            it2["search_score"] = float(score)
+            scored.append((score, it2))
+
+        scored.sort(key=lambda it: it[0], reverse=True)
+        return [item for _, item in scored[: int(limit)]]
 
     async def get_entity_facts(
         self,

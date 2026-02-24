@@ -785,14 +785,17 @@ def _postprocess_settings() -> None:
         cand = root / "workspace"
         if cand.exists():
             settings.workspace = str(cand.resolve())
+        else:
+            # Local/dev fallback: use repository root when /workspace is absent.
+            settings.workspace = str(root.resolve())
 
-            # keep allow_paths coherent (used when creating new sessions)
-            try:
-                parts = [p.strip() for p in (settings.allow_paths or "").split(";") if p.strip()]
-                parts = [settings.workspace if p == "/workspace" else p for p in parts]
-                settings.allow_paths = ";".join(parts)
-            except Exception:
-                pass
+        # keep allow_paths coherent (used when creating new sessions)
+        try:
+            parts = [p.strip() for p in (settings.allow_paths or "").split(";") if p.strip()]
+            parts = [settings.workspace if p == "/workspace" else p for p in parts]
+            settings.allow_paths = ";".join(parts)
+        except Exception:
+            pass
 
 
 _postprocess_settings()
