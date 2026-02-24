@@ -1,21 +1,37 @@
 # Architecture notes
 
-`docs/architecture.png` is a high-level visual map of the project.
+The architecture diagram is generated in two formats:
 
-It highlights:
+- `docs/architecture.png` (high-resolution raster)
+- `docs/architecture.svg` (vector)
 
-- MCP entry points (`mcp_server/*`)
-- core orchestration (`core/memory.py` and related modules)
-- retrieval/knowledge graph/knowledge base subsystems
+It covers the full end-to-end flow:
+
+- client entry points and MCP surface
+- tool wrappers and orchestration
+- retrieval / KB / KG / extraction subsystems
+- safety and reliability controls
 - storage and optional infrastructure backends
-- reliability and safety controls
+- provider and quality layers
 
-The image is intentionally simplified for public README use.
+## Generate or refresh diagram
+
+Install optional diagram libraries:
+
+```bash
+python3 -m pip install matplotlib networkx
+```
+
+Regenerate files:
+
+```bash
+python3 scripts/generate_architecture_diagram.py
+```
 
 ## Logical flow (text)
 
-1. MCP-compatible clients call tools/resources exposed by `mcp_server/memory_tools.py` and `mcp_server/memory_resources.py`.
-2. Requests are validated, rate-limited, and routed into core memory services.
-3. Retrieval/KG/KB subsystems process and persist data.
-4. Data is stored in SQLite by default, with optional external systems.
-5. Reliability and safety wrappers provide fallback behavior and health visibility.
+1. MCP-compatible clients call tools/resources in `mcp_server/memory_tools.py` and `mcp_server/memory_resources.py`.
+2. Tool wrappers enforce DB readiness, rate limits, and request metrics.
+3. `core/memory.py` orchestrates retrieval, KB, KG, extraction, session, and correction workflows.
+4. Subsystems persist data to SQLite by default, with optional PostgreSQL/Redis/Neo4j paths.
+5. Reliability and safety layers provide circuit breaking, fallback behavior, and health visibility.

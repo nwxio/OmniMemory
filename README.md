@@ -41,6 +41,7 @@ This platform was actively developed and validated for OpenCode agent workflows.
 ## Architecture diagram
 
 - [Architecture diagram (PNG)](docs/architecture.png)
+- [Architecture diagram (SVG)](docs/architecture.svg)
 
 Diagram source notes: `docs/architecture.md`
 
