@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Memory-MCP | Self-hosted MCP Memory Platform</title>
+  <meta name="description" content="Memory-MCP is a self-hosted MCP memory platform with hybrid retrieval, knowledge graph, document knowledge base, cross-session context, and reliability controls.">
+  <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
+  <link rel="canonical" href="https://nwxio.github.io/OmniMemory/">
+  <link rel="alternate" hreflang="en" href="https://nwxio.github.io/OmniMemory/">
+  <link rel="sitemap" type="application/xml" title="Sitemap" href="https://nwxio.github.io/OmniMemory/sitemap.xml">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Memory-MCP | Self-hosted MCP Memory Platform">
+  <meta property="og:description" content="Hybrid memory search, KB, KG, extraction, and cross-session context via FastMCP tools.">
+  <meta property="og:url" content="https://nwxio.github.io/OmniMemory/">
+  <meta property="og:image" content="https://nwxio.github.io/OmniMemory/docs/architecture.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Memory-MCP | Self-hosted MCP Memory Platform">
+  <meta name="twitter:description" content="Hybrid memory search, KB, KG, extraction, and cross-session context via FastMCP tools.">
+  <meta name="twitter:image" content="https://nwxio.github.io/OmniMemory/docs/architecture.png">
+
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #111a2b;
+      --text: #e5ecf6;
+      --muted: #a7b3c5;
+      --accent: #5da8ff;
+      --ok: #34d399;
+      --line: #22324a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background: radial-gradient(1000px 500px at 10% -10%, #1b2b47, transparent), var(--bg);
+      line-height: 1.55;
+    }
+    .wrap { max-width: 1050px; margin: 0 auto; padding: 28px 20px 54px; }
+    .hero {
+      background: linear-gradient(180deg, #121e34, #10192a);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0 0 8px; font-size: 2rem; }
+    h2 { margin: 0 0 10px; font-size: 1.2rem; }
+    p, li { color: var(--text); }
+    .muted { color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--card);
+      padding: 16px;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      background: #0d1523;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 1px 6px;
+      color: #c7ddff;
+    }
+    .links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 11px;
+      background: #0e1829;
+      color: var(--text);
+    }
+    .ok { color: var(--ok); }
+  </style>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Memory-MCP",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS, Windows",
+    "description": "Self-hosted MCP memory platform with hybrid retrieval, knowledge graph, document knowledge base, extraction, and cross-session context.",
+    "url": "https://nwxio.github.io/OmniMemory/",
+    "sourceOrganization": {
+      "@type": "Organization",
+      "name": "nwxio"
+    },
+    "softwareVersion": "0.1.0",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>Memory-MCP</h1>
+      <p class="muted">Self-hosted MCP memory platform for coding agents and assistants.</p>
+      <p>
+        Memory-MCP combines structured memory, hybrid search, document knowledge base, knowledge graph,
+        extraction pipeline, cross-session context, and reliability controls into one MCP-compatible backend.
+      </p>
+      <div class="links">
+        <a class="chip" href="README.md">Project overview</a>
+        <a class="chip" href="INSTALL.md">Installation</a>
+        <a class="chip" href="ENV_CONFIGS.md">Environment presets</a>
+        <a class="chip" href="docker/README.md">Docker operations</a>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Core capabilities</h2>
+        <ul>
+          <li>Hybrid retrieval: keyword + semantic search.</li>
+          <li>Knowledge graph: triples, neighbors, path discovery.</li>
+          <li>Knowledge base: ingest/search text, file, and URL content.</li>
+          <li>Cross-session context and conversation history.</li>
+          <li>Memory lifecycle: consolidation, decay, merge, TTL cleanup.</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <h2>MCP tool surface</h2>
+        <ul>
+          <li><code>memory_search</code>, <code>memory_upsert</code>, <code>memory_list</code></li>
+          <li><code>kb_add_document</code>, <code>kb_search_documents</code></li>
+          <li><code>kg_add_triple</code>, <code>kg_get_neighbors</code>, <code>kg_find_path</code></li>
+          <li><code>extract_memories</code>, <code>search_extracted_memories</code></li>
+          <li><code>cross_session_start</code>, <code>cross_session_context</code></li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <h2>Reliability and safety</h2>
+        <ul>
+          <li>Per-tool rate limiting and request metrics.</li>
+          <li>LLM circuit breaker and deterministic fallback.</li>
+          <li>Health snapshots via <code>memory_health</code>.</li>
+          <li>CI quality gates (Ruff, mypy, pytest).</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <h2>Quick start</h2>
+        <p><span class="ok">Local:</span> <code>cp .env.local .env</code> then <code>python -m mcp_server.server</code></p>
+        <p><span class="ok">Docker:</span> <code>./docker-compose.sh start</code>, <code>cp .env.docker .env</code>, then run server.</p>
+        <p class="muted">See install guide for full deployment options.</p>
+      </article>
+    </section>
+
+    <section class="card" style="margin-top: 14px;">
+      <h2>Indexable documentation pages</h2>
+      <ul>
+        <li><a href="README.md">README.md</a></li>
+        <li><a href="INSTALL.md">INSTALL.md</a></li>
+        <li><a href="ENV_CONFIGS.md">ENV_CONFIGS.md</a></li>
+        <li><a href="CONTRIBUTING.md">CONTRIBUTING.md</a></li>
+        <li><a href="SECURITY.md">SECURITY.md</a></li>
+        <li><a href="RELEASE_CHECKLIST.md">RELEASE_CHECKLIST.md</a></li>
+        <li><a href="CODE_OF_CONDUCT.md">CODE_OF_CONDUCT.md</a></li>
+        <li><a href="docs/architecture.md">docs/architecture.md</a></li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
