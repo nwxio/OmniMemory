@@ -54,6 +54,16 @@ Diagram source notes: `docs/architecture.md`
 
 For a real terminal recording flow, see: `docs/live-demo-session.md`
 
+Quick commands:
+
+```bash
+# short demo (60-90 sec)
+./examples/run_live_demo_short.sh
+
+# extended demo (3-5 min)
+./examples/run_live_demo_extended.sh
+```
+
 ## Architecture overview
 
 Core components:
