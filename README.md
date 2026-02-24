@@ -52,6 +52,8 @@ Diagram source notes: `docs/architecture.md`
 
 ![Demo GIF](docs/demo.gif)
 
+For a real terminal recording flow, see: `docs/live-demo-session.md`
+
 ## Architecture overview
 
 Core components:
@@ -374,6 +376,7 @@ python -m mypy core/security/audit.py core/security/gdpr.py core/search/bm25.py 
 - Code of conduct: `CODE_OF_CONDUCT.md`
 - Release process: `RELEASE_CHECKLIST.md`
 - Security policy: `SECURITY.md`
+- Live recording guide: `docs/live-demo-session.md`
 
 ## License
 
