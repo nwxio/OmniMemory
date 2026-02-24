@@ -1,92 +1,91 @@
-# Установка и настройка Memory-MCP
+# Install and setup guide for Memory-MCP
 
-## Требования
+## Requirements
 
 - Python 3.11+
-- Docker + Docker Compose (для PostgreSQL/Redis варианта)
-- Ollama (опционально, для локальной LLM)
+- Docker + Docker Compose (for PostgreSQL/Redis mode)
+- Ollama (optional, for local LLM usage)
 
 ---
 
-## Вариант 1: SQLite (быстрый старт)
+## Option 1: SQLite (quick start)
 
-### 1. Установка зависимостей
+### 1) Install dependencies
 
 ```bash
 pip install -e .
 ```
 
-### 2. Настройка окружения
+### 2) Configure environment
 
 ```bash
-cp .env.example .env
+cp .env.local .env
 ```
 
-### 3. Запуск
+### 3) Run server
 
 ```bash
 python -m mcp_server.server
 ```
 
-**Готово!** Данные хранятся в `./memory.db`.
+Done. Data is stored in `./memory.db`.
 
 ---
 
-## Вариант 2: PostgreSQL + Redis (production)
+## Option 2: PostgreSQL + Redis (production-style)
 
-### 1. Запуск инфраструктуры
+### 1) Start infrastructure
 
 ```bash
-# Запустить PostgreSQL + Redis
+# start PostgreSQL + Redis
 ./docker-compose.sh start
 
-# Проверить статус
+# verify health
 ./docker-compose.sh health
 ```
 
-### 2. Настройка окружения
+### 2) Configure environment
 
 ```bash
-# Использовать готовый конфиг для Docker
 cp .env.docker .env
 ```
 
-### 3. Запуск приложения
+### 3) Run application
 
 ```bash
 pip install -e .
 python -m mcp_server.server
 ```
 
-### 4. Управление
+### 4) Daily operations
 
 ```bash
-# Остановить
+# stop
 ./docker-compose.sh stop
 
-# Перезапустить
+# restart
 ./docker-compose.sh restart
 
-# Бэкап
+# backup
 ./docker-compose.sh backup
 
-# Логи
+# logs
 ./docker-compose.sh logs ai_postgres
 ```
 
-См. [`docker/README.md`](docker/README.md) для деталей.
+See `docker/README.md` for full Docker operations.
 
 ---
 
-## Вариант 3: Гибридный (SQLite + Redis)
+## Option 3: Hybrid mode (SQLite + Redis)
 
-Используйте SQLite для данных, Redis для кэша:
+Use SQLite as primary storage and Redis for cache/rate limiting:
 
 ```bash
-# Запустить только Redis
-docker-compose up -d ai_redis
+# start only Redis
+docker compose up -d ai_redis
 
-# Настроить .env
+# set in .env
 OMNIMIND_REDIS_ENABLED=true
 OMNIMIND_REDIS_HOST=localhost
 OMNIMIND_DB_PATH=./memory.db
@@ -94,16 +93,16 @@ OMNIMIND_DB_PATH=./memory.db
 
 ---
 
-## Проверка установки
+## Verify installation
 
-### Тесты
+### Run tests
 
 ```bash
 pip install -e .[dev]
 pytest tests -v
 ```
 
-### Lint + Type
+### Lint + type checks
 
 ```bash
 ruff check core/ mcp_server/
@@ -118,21 +117,21 @@ python -c "from core.memory import MemoryStore; import asyncio; print(asyncio.ru
 
 ---
 
-## Конфигурация
+## Configuration
 
-### Основные параметры
+### Core settings
 
-| Параметр | Значение по умолчанию | Описание |
-|----------|----------------------|----------|
-| `OMNIMIND_DB_TYPE` | `sqlite` | Тип БД: `sqlite` или `postgres` |
-| `OMNIMIND_DB_PATH` | `./memory.db` | Путь к SQLite файлу |
-| `OMNIMIND_REDIS_ENABLED` | `false` | Включить Redis кэш |
-| `OMNIMIND_LLM_PROVIDER` | `ollama` | LLM провайдер |
-| `OMNIMIND_EMBEDDINGS_PROVIDER` | `fastembed` | Провайдер эмбеддингов |
+| Parameter | Default value | Description |
+|-----------|---------------|-------------|
+| `OMNIMIND_DB_TYPE` | `sqlite` | Database mode: `sqlite` or `postgres` |
+| `OMNIMIND_DB_PATH` | `./memory.db` | SQLite file path |
+| `OMNIMIND_REDIS_ENABLED` | `false` | Enable Redis cache/rate limiting |
+| `OMNIMIND_LLM_PROVIDER` | `ollama` | LLM provider |
+| `OMNIMIND_EMBEDDINGS_PROVIDER` | `fastembed` | Embeddings provider |
 
-### LLM провайдеры
+### LLM provider examples
 
-#### Ollama (локально)
+#### Ollama (local)
 
 ```bash
 OMNIMIND_LLM_PROVIDER=ollama
@@ -140,7 +139,7 @@ OMNIMIND_LLM_BASE_URL=http://localhost:11434
 OMNIMIND_LLM_MODEL=llama3.2
 ```
 
-#### DeepSeek (облако)
+#### DeepSeek (cloud)
 
 ```bash
 OMNIMIND_LLM_PROVIDER=deepseek
@@ -148,7 +147,7 @@ OMNIMIND_LLM_API_KEY=sk-xxx
 OMNIMIND_LLM_MODEL=deepseek-chat
 ```
 
-#### OpenAI (облако)
+#### OpenAI (cloud)
 
 ```bash
 OMNIMIND_LLM_PROVIDER=openai
@@ -163,69 +162,58 @@ OMNIMIND_LLM_MODEL=gpt-4
 ### SQLite: "database is locked"
 
 ```bash
-# Удалить WAL файлы
+# remove WAL files
 rm memory.db-wal memory.db-shm
 
-# Или отключить WAL
+# alternatively disable WAL in sqlite shell
 PRAGMA journal_mode=DELETE;
 ```
 
 ### PostgreSQL: connection refused
 
 ```bash
-# Проверить что контейнер запущен
 docker ps | grep ai_postgres
-
-# Проверить логи
-docker-compose logs ai_postgres
-
-# Проверить подключение
+docker compose logs ai_postgres
 docker exec ai_postgres pg_isready -U memory_user -d memory
 ```
 
-### Redis: не подключается
+### Redis: connection issues
 
 ```bash
-# Проверить что контейнер запущен
 docker ps | grep ai_redis
-
-# Проверить ping
 docker exec ai_redis redis-cli ping
 ```
 
 ### Ollama: model not found
 
 ```bash
-# Загрузить модель
 ollama pull llama3.2
-
-# Проверить доступные модели
 ollama list
 ```
 
 ---
 
-## Production Deployment
+## Production deployment checklist
 
-### 1. Безопасность
+### 1) Security
 
-- Смените пароли в `docker-compose.yml`
-- Используйте secrets для API ключей
-- Отключите публичные порты (если не нужно)
+- Replace default passwords in `docker-compose.yml` and `.env`.
+- Store API keys in secrets manager or Docker secrets.
+- Disable public ports unless explicitly required.
 
-### 2. Масштабирование
+### 2) Scalability
 
-- Используйте Docker Swarm/Kubernetes
-- Настройте репликацию PostgreSQL
-- Используйте Redis Cluster для высокого нагрузки
+- Use Docker Swarm/Kubernetes for orchestration.
+- Configure PostgreSQL replication if needed.
+- Use Redis Cluster under high load.
 
-### 3. Мониторинг
+### 3) Monitoring
 
-- Включите метрики: `OMNIMIND_METRICS_ENABLED=true`
-- Настройте Prometheus + Grafana
-- Используйте pgAdmin для PostgreSQL
+- Enable metrics (`OMNIMIND_METRICS_ENABLED=true`).
+- Use Prometheus + Grafana.
+- Use pgAdmin or DB dashboards for PostgreSQL observability.
 
-### 4. Бэкапы
+### 4) Backups
 
 ```bash
 # PostgreSQL
@@ -240,8 +228,8 @@ cp memory.db memory.db.backup
 
 ---
 
-## Дополнительные ресурсы
+## Additional resources
 
-- [Docker Compose настройка](docker/README.md)
-- [Примеры использования](examples/)
-- [Конфигурация .env](.env.example)
+- Docker setup: `docker/README.md`
+- Usage examples: `examples/`
+- Environment presets: `ENV_CONFIGS.md`

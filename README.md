@@ -44,24 +44,6 @@ This platform was actively developed and validated for OpenCode agent workflows.
 
 Diagram source notes: `docs/architecture.md`
 
-## Demo media
-
-- [Overview screenshot](docs/screenshot-overview.png)
-- [Tools screenshot](docs/screenshot-tools.png)
-- [Demo GIF](docs/demo.gif)
-
-For a real terminal recording flow, see: `docs/live-demo-session.md`
-
-Quick commands:
-
-```bash
-# short demo (60-90 sec)
-./examples/run_live_demo_short.sh
-
-# extended demo (3-5 min)
-./examples/run_live_demo_extended.sh
-```
-
 ## Architecture overview
 
 Core components:
@@ -384,7 +366,6 @@ python -m mypy core/security/audit.py core/security/gdpr.py core/search/bm25.py 
 - Code of conduct: `CODE_OF_CONDUCT.md`
 - Release process: `RELEASE_CHECKLIST.md`
 - Security policy: `SECURITY.md`
-- Live recording guide: `docs/live-demo-session.md`
 
 ## License
 
