@@ -25,6 +25,13 @@ This platform was actively developed and validated for OpenCode agent workflows.
 - OpenCode GitHub: https://github.com/anomalyco/opencode
 - Typical usage: run Memory-MCP as MCP backend for OpenCode sessions and reusable memory.
 
+## Recommended agent prompt (memory policy)
+
+For reliable model behavior and correct memory usage, configure your agent with this prompt:
+
+- [Memory agent prompt](docs/memory-agent-prompt.md)
+- Open in a new window: <a href="docs/memory-agent-prompt.md" target="_blank" rel="noopener noreferrer">Memory agent prompt</a>
+
 ## Key capabilities
 
 - Hybrid memory search: keyword + semantic retrieval.
