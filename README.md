@@ -1,4 +1,4 @@
-# Memory-MCP
+# OmniMemory MCP Server
 
 [![Quality](https://img.shields.io/badge/Quality-Ruff%20%2B%20Pytest%20%2B%20Mypy-22c55e)](https://github.com/nwxio/OmniMemory/actions/workflows/quality.yml)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
