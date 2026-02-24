@@ -1,6 +1,6 @@
 # Memory-MCP
 
-[![Quality](https://github.com/nwxio/OmniMemory/actions/workflows/quality.yml/badge.svg)](https://github.com/nwxio/OmniMemory/actions/workflows/quality.yml)
+[![Quality](https://img.shields.io/badge/Quality-Ruff%20%2B%20Pytest%20%2B%20Mypy-22c55e)](https://github.com/nwxio/OmniMemory/actions/workflows/quality.yml)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-FastMCP-7C3AED)](https://modelcontextprotocol.io/)
@@ -40,17 +40,15 @@ This platform was actively developed and validated for OpenCode agent workflows.
 
 ## Architecture diagram
 
-![Memory-MCP architecture](docs/architecture.png)
+- [Architecture diagram (PNG)](docs/architecture.png)
 
 Diagram source notes: `docs/architecture.md`
 
 ## Demo media
 
-![Overview screenshot](docs/screenshot-overview.png)
-
-![Tools screenshot](docs/screenshot-tools.png)
-
-![Demo GIF](docs/demo.gif)
+- [Overview screenshot](docs/screenshot-overview.png)
+- [Tools screenshot](docs/screenshot-tools.png)
+- [Demo GIF](docs/demo.gif)
 
 For a real terminal recording flow, see: `docs/live-demo-session.md`
 
