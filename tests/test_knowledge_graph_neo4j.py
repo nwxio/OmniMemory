@@ -119,14 +119,12 @@ def test_knowledge_graph_neo4j_neighbors_search_stats_and_clear():
     assert neighbors[1]["direction"] == "in"
 
     entities = _run(kg.search_entities("ali", entity_type="person", limit=5))
-    assert entities == [
-        {
-            "name": "Alice",
-            "type": "person",
-            "mention_count": 3,
-            "role": "entity",
-        }
-    ]
+    assert len(entities) == 1
+    assert entities[0]["name"] == "Alice"
+    assert entities[0]["type"] == "person"
+    assert entities[0]["mention_count"] == 3
+    assert entities[0]["role"] == "entity"
+    assert float(entities[0].get("search_score", 0.0)) > 0.0
 
     stats = _run(kg.get_stats())
     assert stats == {"subjects": 2, "predicates": 1, "objects": 2, "triples": 1}

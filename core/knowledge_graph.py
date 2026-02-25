@@ -540,7 +540,7 @@ class KnowledgeGraph:
             await conn.execute(
                 """INSERT INTO kg_subjects(id, name, entity_type, created_at, mention_count)
                    VALUES (?, ?, ?, ?, 1)
-                   ON CONFLICT(name) DO UPDATE SET mention_count = mention_count + 1""",
+                   ON CONFLICT(name) DO UPDATE SET mention_count = kg_subjects.mention_count + 1""",
                 (subj_id, subject, self._classify_entity(subject), now),
             )
 
@@ -558,7 +558,7 @@ class KnowledgeGraph:
             await conn.execute(
                 """INSERT INTO kg_objects(id, name, entity_type, created_at, mention_count)
                    VALUES (?, ?, ?, ?, 1)
-                   ON CONFLICT(name) DO UPDATE SET mention_count = mention_count + 1""",
+                   ON CONFLICT(name) DO UPDATE SET mention_count = kg_objects.mention_count + 1""",
                 (obj_id, object_name, self._classify_entity(object_name), now),
             )
 

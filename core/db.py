@@ -824,6 +824,103 @@ class PostgresDB:
                 except Exception:
                     pass
 
+            # Procedural memory tables (parity with SQLite init path).
+            try:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS procedural_memory (
+                        id TEXT PRIMARY KEY,
+                        key TEXT UNIQUE NOT NULL,
+                        title TEXT NOT NULL,
+                        steps TEXT NOT NULL,
+                        metadata TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_procedural_key ON procedural_memory(key)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_procedural_created ON procedural_memory(created_at)"
+                )
+            except Exception:
+                pass
+
+            # Semantic memory tables.
+            try:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS semantic_entities (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        entity_type TEXT NOT NULL,
+                        properties TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_semantic_name ON semantic_entities(name)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_semantic_type ON semantic_entities(entity_type)"
+                )
+
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS semantic_relations (
+                        id TEXT PRIMARY KEY,
+                        subject_id TEXT NOT NULL,
+                        predicate TEXT NOT NULL,
+                        object_id TEXT NOT NULL,
+                        properties TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_relations_subject ON semantic_relations(subject_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_relations_object ON semantic_relations(object_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_relations_predicate ON semantic_relations(predicate)"
+                )
+            except Exception:
+                pass
+
+            # Audit log table used by quality/security tests.
+            try:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_log (
+                        id BIGSERIAL PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        user_id TEXT,
+                        action TEXT NOT NULL,
+                        resource_type TEXT,
+                        resource_id TEXT,
+                        details TEXT,
+                        ip_address TEXT
+                    )
+                    """
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource_type, resource_id)"
+                )
+            except Exception:
+                pass
+
             # PostgreSQL FTS indexes used by lessons/workspace search in parity mode.
             try:
                 await conn.execute(
