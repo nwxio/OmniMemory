@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -10,8 +11,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _postgres_driver_available() -> bool:
+    return bool(importlib.util.find_spec("psycopg2") or importlib.util.find_spec("psycopg"))
+
+
 def _run_python(code: str, db_path: Path, env_overrides: dict[str, str] | None = None) -> str:
     env = os.environ.copy()
+    env["OMNIMIND_ENV_FILE"] = ""
+    env["OMNIMIND_DB_STRICT_BACKEND"] = "false"
     env["OMNIMIND_DB_PATH"] = str(db_path)
     if env_overrides:
         env.update(env_overrides)
@@ -29,6 +36,30 @@ def _run_python(code: str, db_path: Path, env_overrides: dict[str, str] | None =
     )
     assert proc.returncode == 0, f"python failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     return proc.stdout.strip()
+
+
+def _run_python_expect_fail(
+    code: str, db_path: Path, env_overrides: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["OMNIMIND_ENV_FILE"] = ""
+    env["OMNIMIND_DB_PATH"] = str(db_path)
+    if env_overrides:
+        env.update(env_overrides)
+
+    root_str = str(PROJECT_ROOT)
+    py_path = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = root_str if not py_path else root_str + os.pathsep + py_path
+
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0, "python unexpectedly succeeded"
+    return proc
 
 
 def test_memory_tools_lazy_db_init_and_roundtrip(tmp_path: Path) -> None:
@@ -109,10 +140,7 @@ def test_new_mcp_tools_procedural_semantic_and_metrics(tmp_path: Path) -> None:
 
 def test_health_reports_db_backend_selection(tmp_path: Path) -> None:
     code = (
-        "import asyncio, json\n"
-        "from mcp_server.memory_tools import memory_health\n"
-        "out = asyncio.run(memory_health())\n"
-        "print(json.dumps(out.get('db_backend') or {}))\n"
+        "import json\nfrom core.db import db_backend_info\nprint(json.dumps(db_backend_info()))\n"
     )
     out = _run_python(
         code,
@@ -121,4 +149,58 @@ def test_health_reports_db_backend_selection(tmp_path: Path) -> None:
     )
     payload = json.loads(out.splitlines()[-1])
     assert payload.get("requested") == "postgres"
+    expected = "postgres" if _postgres_driver_available() else "sqlite"
+    assert payload.get("effective") == expected
+
+
+def test_health_db_backend_flags_override_db_type_to_sqlite(tmp_path: Path) -> None:
+    code = (
+        "import asyncio, json\n"
+        "from mcp_server.memory_tools import memory_health\n"
+        "out = asyncio.run(memory_health())\n"
+        "print(json.dumps(out.get('db_backend') or {}))\n"
+    )
+    out = _run_python(
+        code,
+        tmp_path / "backend_flags_sqlite.db",
+        env_overrides={
+            "OMNIMIND_DB_TYPE": "postgres",
+            "OMNIMIND_POSTGRES_ENABLED": "false",
+            "OMNIMIND_SQLITE_ENABLED": "true",
+        },
+    )
+    payload = json.loads(out.splitlines()[-1])
+    assert payload.get("requested") == "sqlite"
     assert payload.get("effective") == "sqlite"
+
+
+def test_health_db_backend_flags_override_db_type_to_postgres(tmp_path: Path) -> None:
+    code = (
+        "import json\nfrom core.db import db_backend_info\nprint(json.dumps(db_backend_info()))\n"
+    )
+    out = _run_python(
+        code,
+        tmp_path / "backend_flags_postgres.db",
+        env_overrides={
+            "OMNIMIND_DB_TYPE": "sqlite",
+            "OMNIMIND_POSTGRES_ENABLED": "true",
+            "OMNIMIND_SQLITE_ENABLED": "false",
+        },
+    )
+    payload = json.loads(out.splitlines()[-1])
+    assert payload.get("requested") == "postgres"
+    expected = "postgres" if _postgres_driver_available() else "sqlite"
+    assert payload.get("effective") == expected
+
+
+def test_strict_backend_rejects_postgres_sqlite_mismatch(tmp_path: Path) -> None:
+    code = "from core.db import db_backend_info\nprint(db_backend_info())\n"
+    proc = _run_python_expect_fail(
+        code,
+        tmp_path / "strict_backend.db",
+        env_overrides={
+            "OMNIMIND_DB_TYPE": "unknown_backend",
+            "OMNIMIND_DB_STRICT_BACKEND": "true",
+        },
+    )
+    assert "strict backend mode" in (proc.stderr or "")

@@ -124,10 +124,22 @@ python -c "from core.memory import MemoryStore; import asyncio; print(asyncio.ru
 | Parameter | Default value | Description |
 |-----------|---------------|-------------|
 | `OMNIMIND_DB_TYPE` | `sqlite` | Database mode: `sqlite` or `postgres` |
+| `OMNIMIND_POSTGRES_ENABLED` | `unset` | Preferred DB toggle. `true` requests PostgreSQL backend |
+| `OMNIMIND_SQLITE_ENABLED` | `unset` | Preferred DB toggle. `true` requests SQLite backend |
+| `OMNIMIND_DB_STRICT_BACKEND` | `false` | If `true`, requested/effective backend mismatch fails startup |
 | `OMNIMIND_DB_PATH` | `./memory.db` | SQLite file path |
 | `OMNIMIND_REDIS_ENABLED` | `false` | Enable Redis cache/rate limiting |
 | `OMNIMIND_LLM_PROVIDER` | `ollama` | LLM provider |
 | `OMNIMIND_EMBEDDINGS_PROVIDER` | `fastembed` | Embeddings provider |
+
+Backend selection rules:
+
+- Preferred: set exactly one flag to `true` and the other to `false`.
+- If both flags are omitted, runtime uses `OMNIMIND_DB_TYPE` (backward compatibility).
+- If both flags are equal (`true/true` or `false/false`), runtime falls back to `OMNIMIND_DB_TYPE`.
+- `OMNIMIND_DB_STRICT_BACKEND=true` makes fallback fatal (startup error), so mismatch cannot be ignored.
+- PostgreSQL backend is activated when postgres mode is requested and a PostgreSQL driver is installed.
+- Verify real runtime backend via `memory_health` (`db_backend.effective`).
 
 ### LLM provider examples
 
@@ -175,6 +187,12 @@ PRAGMA journal_mode=DELETE;
 docker ps | grep ai_postgres
 docker compose logs ai_postgres
 docker exec ai_postgres pg_isready -U memory_user -d memory
+```
+
+### PostgreSQL: driver missing (`psycopg2 is not installed`)
+
+```bash
+pip install psycopg2-binary
 ```
 
 ### Redis: connection issues

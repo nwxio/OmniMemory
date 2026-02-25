@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import warnings
 from pathlib import Path
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
+from urllib.parse import quote
+
+from .config import settings
 
 # aiosqlite is preferred (true async, uses a worker thread internally).
 # For dev environments where deps are incomplete (or selfcheck runs outside Docker),
@@ -13,7 +18,6 @@ from typing import Any, Optional, Sequence
 try:  # pragma: no cover
     import aiosqlite  # type: ignore
 except Exception:  # pragma: no cover
-    import asyncio
     import sqlite3
     from dataclasses import dataclass as _dataclass
     from typing import Any as _Any
@@ -65,6 +69,15 @@ except Exception:  # pragma: no cover
                 cur = await asyncio.to_thread(self._conn.execute, sql, params)
                 return _Cursor(cur, self._lock)
 
+        async def execute_fetchall(
+            self, sql: str, params: Sequence[_Any] | None = None
+        ) -> list[_Any]:
+            cur = await self.execute(sql, params)
+            try:
+                return await cur.fetchall()
+            finally:
+                await cur.close()
+
         async def executescript(self, script: str) -> None:
             async with self._lock:
                 await asyncio.to_thread(self._conn.executescript, script)
@@ -95,10 +108,330 @@ except Exception:  # pragma: no cover
 
     aiosqlite = _AioSqliteShim()  # type: ignore
 
-from .config import settings
+try:  # pragma: no cover
+    import psycopg2  # type: ignore
+    from psycopg2 import extras as psycopg2_extras  # type: ignore
+except Exception:  # pragma: no cover
+    psycopg2 = None  # type: ignore
+    psycopg2_extras = None  # type: ignore
 
 
-_DB_REQUESTED_BACKEND = str(getattr(settings, "db_type", "sqlite") or "sqlite").strip().lower()
+def _pg_driver_available() -> bool:
+    return psycopg2 is not None and psycopg2_extras is not None
+
+
+def _pg_dsn() -> str:
+    user = str(getattr(settings, "postgres_user", "postgres") or "postgres")
+    password = str(getattr(settings, "postgres_password", "") or "")
+    host = str(getattr(settings, "postgres_host", "localhost") or "localhost")
+    port = int(getattr(settings, "postgres_port", 5432) or 5432)
+    dbname = str(getattr(settings, "postgres_db", "memory") or "memory")
+    user_q = quote(user, safe="")
+    dbname_q = quote(dbname, safe="")
+    if password:
+        password_q = quote(password, safe="")
+        return f"postgresql://{user_q}:{password_q}@{host}:{port}/{dbname_q}"
+    return f"postgresql://{user_q}@{host}:{port}/{dbname_q}"
+
+
+def _split_sql_script(script: str) -> list[str]:
+    parts: list[str] = []
+    cur: list[str] = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(script):
+        ch = script[i]
+        if ch == "'" and not in_double:
+            if in_single and i + 1 < len(script) and script[i + 1] == "'":
+                cur.append("''")
+                i += 2
+                continue
+            in_single = not in_single
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == ";" and not in_single and not in_double:
+            stmt = "".join(cur).strip()
+            if stmt:
+                parts.append(stmt)
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    tail = "".join(cur).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _replace_qmark_placeholders(sql: str) -> str:
+    out: list[str] = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch == "'" and not in_double:
+            if in_single and i + 1 < len(sql) and sql[i + 1] == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_single = not in_single
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "?" and not in_single and not in_double:
+            out.append("%s")
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _strip_sql_comments(stmt: str) -> str:
+    lines = []
+    for line in (stmt or "").splitlines():
+        s = line.strip()
+        if s.startswith("--"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _pg_transform_sql(sql: str, *, schema: bool) -> tuple[str, bool]:
+    stmt = _strip_sql_comments(sql)
+    if not stmt:
+        return "", True
+
+    low = stmt.lower().strip()
+    if low.startswith("pragma"):
+        return "", True
+
+    if schema:
+        if low.startswith("create virtual table"):
+            return "", True
+        if low.startswith("create trigger"):
+            return "", True
+        if "lessons_fts" in low or "memory_fts" in low:
+            return "", True
+    else:
+        # SQLite maintenance statements that don't exist in PostgreSQL.
+        if low.startswith("pragma"):
+            return "", True
+
+    if "insert into lessons_fts(lessons_fts) values('rebuild')" in low:
+        return "", True
+
+    stmt = re.sub(
+        r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b",
+        "BIGSERIAL PRIMARY KEY",
+        stmt,
+        flags=re.IGNORECASE,
+    )
+    stmt = re.sub(r"\bAUTOINCREMENT\b", "", stmt, flags=re.IGNORECASE)
+    stmt = re.sub(r"datetime\('now'\)", "CURRENT_TIMESTAMP", stmt, flags=re.IGNORECASE)
+    stmt = re.sub(r"\bBLOB\b", "BYTEA", stmt, flags=re.IGNORECASE)
+    stmt = re.sub(r"\bIS\s+\?", "IS NOT DISTINCT FROM ?", stmt, flags=re.IGNORECASE)
+
+    if re.match(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+", stmt, flags=re.IGNORECASE):
+        stmt = re.sub(
+            r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+",
+            "INSERT INTO ",
+            stmt,
+            flags=re.IGNORECASE,
+        ).strip()
+        if " on conflict " not in stmt.lower():
+            stmt = stmt.rstrip(";") + " ON CONFLICT DO NOTHING"
+
+    stmt = _replace_qmark_placeholders(stmt)
+    return stmt, False
+
+
+@dataclass
+class _NoopCursor:
+    rowcount: int = 0
+
+    async def fetchall(self) -> list[Any]:
+        return []
+
+    async def fetchone(self) -> Any:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+@dataclass
+class _PgCursor:
+    _cur: Any
+    _lock: asyncio.Lock
+
+    @property
+    def rowcount(self) -> int:
+        return int(getattr(self._cur, "rowcount", -1))
+
+    async def fetchall(self) -> list[Any]:
+        async with self._lock:
+            return await asyncio.to_thread(self._cur.fetchall)
+
+    async def fetchone(self) -> Any:
+        async with self._lock:
+            return await asyncio.to_thread(self._cur.fetchone)
+
+    async def close(self) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._cur.close)
+
+
+class _PgConnection:
+    def __init__(self, dsn: str):
+        if not _pg_driver_available():  # pragma: no cover
+            raise RuntimeError("psycopg2 is not installed")
+        self._dsn = dsn
+        self._lock = asyncio.Lock()
+        self._conn = None
+        self._row_factory = None
+
+    async def _ensure_open(self) -> None:
+        if self._conn is not None:
+            return
+        self._conn = await asyncio.to_thread(psycopg2.connect, self._dsn)  # type: ignore[arg-type]
+        self._conn.autocommit = False
+
+    @property
+    def row_factory(self):  # compatibility with sqlite connection
+        return self._row_factory
+
+    @row_factory.setter
+    def row_factory(self, v):  # compatibility with sqlite connection
+        self._row_factory = v
+
+    async def execute(self, sql: str, params: Sequence[Any] | None = None):
+        await self._ensure_open()
+        conn = self._conn
+        if conn is None:  # pragma: no cover
+            raise RuntimeError("postgres connection is not initialized")
+        if params is None:
+            params = ()
+        sql2, skip = _pg_transform_sql(sql, schema=False)
+        if skip:
+            return _NoopCursor()
+
+        async with self._lock:
+            cursor_factory = getattr(psycopg2_extras, "DictCursor", None)
+            if cursor_factory is None:
+                cur = await asyncio.to_thread(conn.cursor)
+            else:
+                cur = await asyncio.to_thread(
+                    conn.cursor,
+                    cursor_factory=cursor_factory,
+                )
+            await asyncio.to_thread(cur.execute, sql2, tuple(params))
+            return _PgCursor(cur, self._lock)
+
+    async def execute_fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[Any]:
+        cur = await self.execute(sql, params)
+        try:
+            return await cur.fetchall()
+        finally:
+            await cur.close()
+
+    async def executescript(self, script: str) -> None:
+        await self._ensure_open()
+        conn = self._conn
+        if conn is None:  # pragma: no cover
+            raise RuntimeError("postgres connection is not initialized")
+        for stmt in _split_sql_script(script):
+            sql2, skip = _pg_transform_sql(stmt, schema=True)
+            if skip:
+                continue
+            async with self._lock:
+                cur = await asyncio.to_thread(conn.cursor)
+                try:
+                    await asyncio.to_thread(cur.execute, sql2)
+                finally:
+                    await asyncio.to_thread(cur.close)
+
+    async def commit(self) -> None:
+        await self._ensure_open()
+        async with self._lock:
+            await asyncio.to_thread(self._conn.commit)  # type: ignore[union-attr]
+
+    async def rollback(self) -> None:
+        if self._conn is None:
+            return
+        async with self._lock:
+            await asyncio.to_thread(self._conn.rollback)
+
+    async def close(self) -> None:
+        if self._conn is None:
+            return
+        async with self._lock:
+            await asyncio.to_thread(self._conn.close)
+            self._conn = None
+
+    async def __aenter__(self) -> "_PgConnection":
+        await self._ensure_open()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        try:
+            if exc_type is None:
+                await self.commit()
+            else:
+                await self.rollback()
+        finally:
+            await self.close()
+
+
+def _resolve_requested_backend() -> tuple[str, str]:
+    legacy = str(getattr(settings, "db_type", "sqlite") or "sqlite").strip().lower()
+    pg_flag = getattr(settings, "postgres_enabled", None)
+    sqlite_flag = getattr(settings, "sqlite_enabled", None)
+
+    if pg_flag is None and sqlite_flag is None:
+        return legacy, ""
+
+    # Single-flag mode is supported for convenience:
+    # - postgres_enabled=true  => sqlite_enabled=false
+    # - sqlite_enabled=true    => postgres_enabled=false
+    if pg_flag is None:
+        pg_flag = not bool(sqlite_flag)
+    if sqlite_flag is None:
+        sqlite_flag = not bool(pg_flag)
+
+    if pg_flag and not sqlite_flag:
+        return (
+            "postgres",
+            "backend requested via OMNIMIND_POSTGRES_ENABLED=true and OMNIMIND_SQLITE_ENABLED=false",
+        )
+    if sqlite_flag and not pg_flag:
+        return (
+            "sqlite",
+            "backend requested via OMNIMIND_SQLITE_ENABLED=true and OMNIMIND_POSTGRES_ENABLED=false",
+        )
+
+    # Ambiguous configuration: keep backward compatibility with OMNIMIND_DB_TYPE.
+    return (
+        legacy,
+        "ambiguous backend flags (both true or both false); using OMNIMIND_DB_TYPE",
+    )
+
+
+_DB_REQUESTED_BACKEND, _DB_SELECTION_NOTE = _resolve_requested_backend()
 _DB_EFFECTIVE_BACKEND = "sqlite"
 _DB_BACKEND_NOTE = ""
 
@@ -108,6 +441,9 @@ def db_backend_info() -> dict[str, str]:
         "requested": _DB_REQUESTED_BACKEND,
         "effective": _DB_EFFECTIVE_BACKEND,
         "note": _DB_BACKEND_NOTE,
+        "selection": _DB_SELECTION_NOTE,
+        "strict": "true" if bool(getattr(settings, "db_strict_backend", False)) else "false",
+        "postgres_driver": "available" if _pg_driver_available() else "missing",
     }
 
 
@@ -424,29 +760,127 @@ class DB:
             await conn.commit()
 
 
-def _build_db() -> DB:
+@dataclass
+class PostgresDB:
+    path: str
+    dsn: str
+
+    @asynccontextmanager
+    async def connect(self):
+        async with _PgConnection(self.dsn) as conn:
+            yield conn
+
+    async def init(self) -> None:
+        async with self.connect() as conn:
+            await conn.executescript(SCHEMA_SQL)
+
+            # Mirror SQLite migration behavior for existing PostgreSQL databases.
+            alter_statements = [
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_activity TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS archived INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS capabilities_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS llm_settings_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS imagegen_settings_json TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_status TEXT NOT NULL DEFAULT 'active'",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS started_at TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ended_at TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS summary TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS observations_json TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_prompt TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS imagegen_profile_id TEXT",
+                "ALTER TABLE monitor_rules ADD COLUMN IF NOT EXISTS last_status_json TEXT",
+                "ALTER TABLE monitor_rules ADD COLUMN IF NOT EXISTS last_checked_at TEXT",
+                "ALTER TABLE monitor_rules ADD COLUMN IF NOT EXISTS last_auto_json TEXT",
+                "ALTER TABLE monitor_rules ADD COLUMN IF NOT EXISTS last_auto_at TEXT",
+                "ALTER TABLE preferences ADD COLUMN IF NOT EXISTS source TEXT",
+                "ALTER TABLE preferences ADD COLUMN IF NOT EXISTS is_locked INTEGER",
+                "ALTER TABLE preferences ADD COLUMN IF NOT EXISTS created_at TEXT",
+                "ALTER TABLE preferences ADD COLUMN IF NOT EXISTS updated_by TEXT",
+                "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS fingerprint TEXT",
+                "ALTER TABLE monitor_results ADD COLUMN IF NOT EXISTS session_id TEXT",
+                "ALTER TABLE monitor_results ADD COLUMN IF NOT EXISTS checked_at TEXT",
+            ]
+            for stmt in alter_statements:
+                try:
+                    await conn.execute(stmt)
+                except Exception:
+                    pass
+
+            backfill_statements = [
+                "UPDATE sessions SET archived=0 WHERE archived IS NULL",
+                "UPDATE sessions SET last_activity=created_at WHERE last_activity IS NULL",
+                "UPDATE sessions SET capabilities_json='{}' WHERE capabilities_json IS NULL OR capabilities_json=''",
+                "UPDATE sessions SET llm_settings_json='{}' WHERE llm_settings_json IS NULL OR llm_settings_json=''",
+                "UPDATE sessions SET imagegen_settings_json='{}' WHERE imagegen_settings_json IS NULL OR imagegen_settings_json=''",
+                "UPDATE preferences SET source='manual' WHERE source IS NULL OR source=''",
+                "UPDATE preferences SET is_locked=1 WHERE is_locked IS NULL",
+                "UPDATE preferences SET created_at=updated_at WHERE created_at IS NULL",
+                "UPDATE preferences SET updated_by='migration' WHERE updated_by IS NULL OR updated_by=''",
+            ]
+            for stmt in backfill_statements:
+                try:
+                    await conn.execute(stmt)
+                except Exception:
+                    pass
+
+            # PostgreSQL FTS indexes used by lessons/workspace search in parity mode.
+            try:
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lessons_search_tsv ON lessons "
+                    "USING GIN (to_tsvector('simple', coalesce(key,'') || ' ' || coalesce(lesson,'') || ' ' || coalesce(meta_json,'')))"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_docs_search_tsv ON memory_docs "
+                    "USING GIN (to_tsvector('simple', coalesce(path,'') || ' ' || coalesce(content,'')))"
+                )
+            except Exception:
+                pass
+
+
+def _build_db() -> DB | PostgresDB:
     global _DB_EFFECTIVE_BACKEND, _DB_BACKEND_NOTE
+
+    strict_backend = bool(getattr(settings, "db_strict_backend", False))
+
+    def _raise_if_strict_mismatch() -> None:
+        if not strict_backend:
+            return
+        if _DB_REQUESTED_BACKEND != _DB_EFFECTIVE_BACKEND:
+            raise RuntimeError(
+                "strict backend mode: requested "
+                f"'{_DB_REQUESTED_BACKEND}' but effective backend is '{_DB_EFFECTIVE_BACKEND}'. "
+                "Adjust OMNIMIND_POSTGRES_ENABLED/OMNIMIND_SQLITE_ENABLED or disable OMNIMIND_DB_STRICT_BACKEND."
+            )
 
     if _DB_REQUESTED_BACKEND in ("", "sqlite"):
         _DB_EFFECTIVE_BACKEND = "sqlite"
         _DB_BACKEND_NOTE = ""
+        _raise_if_strict_mismatch()
         return DB(settings.db_path)
 
     if _DB_REQUESTED_BACKEND == "postgres":
-        # Full memory feature parity currently relies on SQLite-specific features
-        # (FTS5, PRAGMAs, migration scripts). We keep runtime safe by falling
-        # back to SQLite unless/until a full Postgres storage implementation
-        # is enabled for all memory paths.
-        _DB_EFFECTIVE_BACKEND = "sqlite"
-        _DB_BACKEND_NOTE = (
-            "postgres requested but full feature parity is not enabled; using sqlite backend"
-        )
-        warnings.warn(_DB_BACKEND_NOTE)
-        return DB(settings.db_path)
+        if not _pg_driver_available():
+            _DB_EFFECTIVE_BACKEND = "sqlite"
+            _DB_BACKEND_NOTE = (
+                "postgres requested but psycopg2 is not installed; using sqlite backend"
+            )
+            warnings.warn(_DB_BACKEND_NOTE)
+            _raise_if_strict_mismatch()
+            return DB(settings.db_path)
+
+        _DB_EFFECTIVE_BACKEND = "postgres"
+        _DB_BACKEND_NOTE = ""
+        _raise_if_strict_mismatch()
+        return PostgresDB(path=settings.db_path, dsn=_pg_dsn())
 
     _DB_EFFECTIVE_BACKEND = "sqlite"
     _DB_BACKEND_NOTE = f"unknown db_type '{_DB_REQUESTED_BACKEND}', using sqlite backend"
     warnings.warn(_DB_BACKEND_NOTE)
+    _raise_if_strict_mismatch()
     return DB(settings.db_path)
 
 
@@ -1009,18 +1443,14 @@ async def init_db() -> None:
     await db.init()
 
 
-async def fetch_one(
-    conn: aiosqlite.Connection, sql: str, args: Sequence[Any] = ()
-) -> Optional[aiosqlite.Row]:
+async def fetch_one(conn: Any, sql: str, args: Sequence[Any] = ()) -> Optional[Any]:
     cur = await conn.execute(sql, args)
     row = await cur.fetchone()
     await cur.close()
     return row
 
 
-async def fetch_all(
-    conn: aiosqlite.Connection, sql: str, args: Sequence[Any] = ()
-) -> list[aiosqlite.Row]:
+async def fetch_all(conn: Any, sql: str, args: Sequence[Any] = ()) -> list[Any]:
     cur = await conn.execute(sql, args)
     rows = await cur.fetchall()
     await cur.close()

@@ -117,10 +117,16 @@ Common environment values:
 ```bash
 # Database
 OMNIMIND_DB_TYPE=sqlite
+OMNIMIND_POSTGRES_ENABLED=false
+OMNIMIND_SQLITE_ENABLED=true
+OMNIMIND_DB_STRICT_BACKEND=false
 OMNIMIND_DB_PATH=./memory.db
 
 # Optional postgres/redis mode
 OMNIMIND_DB_TYPE=postgres
+OMNIMIND_POSTGRES_ENABLED=true
+OMNIMIND_SQLITE_ENABLED=false
+OMNIMIND_DB_STRICT_BACKEND=true
 OMNIMIND_POSTGRES_HOST=localhost
 OMNIMIND_POSTGRES_PORT=5442
 OMNIMIND_POSTGRES_DB=memory
@@ -139,6 +145,15 @@ OMNIMIND_NEO4J_USER=neo4j
 OMNIMIND_NEO4J_PASSWORD=***
 OMNIMIND_NEO4J_DATABASE=neo4j
 ```
+
+Notes:
+
+- `OMNIMIND_POSTGRES_ENABLED` + `OMNIMIND_SQLITE_ENABLED` are the preferred toggles.
+- If both are omitted, `OMNIMIND_DB_TYPE` is used for backward compatibility.
+- If both toggles are set to the same value (`true/true` or `false/false`), runtime falls back to `OMNIMIND_DB_TYPE`.
+- `OMNIMIND_DB_STRICT_BACKEND=true` turns backend mismatch into startup error (no silent fallback).
+- PostgreSQL backend is used when a PostgreSQL driver is installed (`psycopg2`/`psycopg`) and postgres mode is requested.
+- Check active backend at runtime via `memory_health` -> `db_backend`.
 
 ## MCP tools
 

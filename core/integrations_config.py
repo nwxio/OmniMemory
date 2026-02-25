@@ -6,6 +6,9 @@ class DatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OMNIMIND_")
 
     db_type: str = "sqlite"
+    postgres_enabled: Optional[bool] = None
+    sqlite_enabled: Optional[bool] = None
+    db_strict_backend: bool = False
 
     # SQLite
     db_path: str = "./memory.db"

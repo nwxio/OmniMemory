@@ -4,13 +4,13 @@ This repository ships with ready-to-use environment presets for common deploymen
 
 ## Available presets
 
-| File | Intended use | DB | LLM | Redis |
-|------|--------------|----|-----|-------|
-| `.env` | active runtime config | depends on file content | depends on file content | depends on file content |
-| `.env.local` | local development | SQLite | Ollama | no |
-| `.env.docker` | Docker stack | PostgreSQL | Ollama | yes |
-| `.env.production` | production baseline | PostgreSQL | OpenAI | yes |
-| `.env.budget` | low-cost mode | SQLite | DeepSeek | no |
+| File | Intended use | DB | DB flags | LLM | Redis |
+|------|--------------|----|----------|-----|-------|
+| `.env` | active runtime config | depends on file content | depends on file content | depends on file content | depends on file content |
+| `.env.local` | local development | SQLite | `POSTGRES=false`, `SQLITE=true` | Ollama | no |
+| `.env.docker` | Docker stack | PostgreSQL | `POSTGRES=true`, `SQLITE=false` | Ollama | yes |
+| `.env.production` | production baseline | PostgreSQL | `POSTGRES=true`, `SQLITE=false` | OpenAI | yes |
+| `.env.budget` | low-cost mode | SQLite | `POSTGRES=false`, `SQLITE=true` | DeepSeek | no |
 
 ## Quick setup recipes
 
@@ -79,9 +79,20 @@ Check active profile quickly:
 
 ```bash
 grep "^OMNIMIND_DB_TYPE" .env
+grep "^OMNIMIND_POSTGRES_ENABLED" .env
+grep "^OMNIMIND_SQLITE_ENABLED" .env
 grep "^OMNIMIND_LLM_PROVIDER" .env
 grep "^OMNIMIND_REDIS_ENABLED" .env
 ```
+
+DB toggle priority:
+
+- Preferred: `OMNIMIND_POSTGRES_ENABLED` + `OMNIMIND_SQLITE_ENABLED`
+- Backward compatibility: `OMNIMIND_DB_TYPE` is used when both toggles are omitted
+- Ambiguous flags (`true/true` or `false/false`) fall back to `OMNIMIND_DB_TYPE`
+- Optional strict mode: set `OMNIMIND_DB_STRICT_BACKEND=true` to fail startup on requested/effective mismatch.
+- PostgreSQL backend requires a PostgreSQL Python driver (`psycopg2`/`psycopg`).
+- Check active backend via `memory_health` (`db_backend.effective`).
 
 ## Critical variables to review before deployment
 

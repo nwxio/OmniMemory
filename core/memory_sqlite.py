@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .config import settings
-from .db import db, dumps, fetch_one, fetch_all
+from .db import db, db_backend_info, dumps, fetch_one, fetch_all
 from .ids import new_id
 from .redact import redact_text, redact_dict
 from .search_match import build_like_clause, query_tokens, score_fields
@@ -97,6 +97,13 @@ _DEFAULT_DENY = [
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _effective_db_backend() -> str:
+    try:
+        return str((db_backend_info().get("effective") or "sqlite")).strip().lower()
+    except Exception:
+        return "sqlite"
 
 
 def _is_probably_binary(b: bytes) -> bool:
@@ -462,7 +469,7 @@ class MemorySQL:
         return out
 
     async def search_lessons(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Search lessons using SQLite FTS5.
+        """Search lessons using backend-specific full text.
 
         Returns a list of dicts with lesson text + a compact snippet for UI.
         This is best-effort and must never raise.
@@ -474,25 +481,48 @@ class MemorySQL:
         if not q_s:
             return []
 
+        backend = _effective_db_backend()
         async with db.connect() as conn:
             try:
-                rows = await fetch_all(
-                    conn,
-                    """
-                    SELECT l.key,
-                           l.lesson,
-                           l.meta_json,
-                           l.updated_at,
-                           snippet(lessons_fts, 1, '[', ']', '…', 16) AS snippet,
-                           bm25(lessons_fts) AS score
-                    FROM lessons_fts
-                    JOIN lessons l ON lessons_fts.rowid = l.rowid
-                    WHERE lessons_fts MATCH ?
-                    ORDER BY score
-                    LIMIT ?
-                    """,
-                    (q_s, int(limit)),
-                )
+                if backend == "postgres":
+                    rows = await fetch_all(
+                        conn,
+                        """
+                        SELECT key,
+                               lesson,
+                               meta_json,
+                               updated_at,
+                               SUBSTRING(COALESCE(lesson, '') FROM 1 FOR 240) AS snippet,
+                               ts_rank_cd(
+                                   to_tsvector('simple', COALESCE(key, '') || ' ' || COALESCE(lesson, '') || ' ' || COALESCE(meta_json, '')),
+                                   plainto_tsquery('simple', ?)
+                               ) AS score
+                        FROM lessons
+                        WHERE to_tsvector('simple', COALESCE(key, '') || ' ' || COALESCE(lesson, '') || ' ' || COALESCE(meta_json, ''))
+                              @@ plainto_tsquery('simple', ?)
+                        ORDER BY score DESC, updated_at DESC
+                        LIMIT ?
+                        """,
+                        (q_s, q_s, int(limit)),
+                    )
+                else:
+                    rows = await fetch_all(
+                        conn,
+                        """
+                        SELECT l.key,
+                               l.lesson,
+                               l.meta_json,
+                               l.updated_at,
+                               snippet(lessons_fts, 1, '[', ']', '…', 16) AS snippet,
+                               bm25(lessons_fts) AS score
+                        FROM lessons_fts
+                        JOIN lessons l ON lessons_fts.rowid = l.rowid
+                        WHERE lessons_fts MATCH ?
+                        ORDER BY score
+                        LIMIT ?
+                        """,
+                        (q_s, int(limit)),
+                    )
             except Exception:
                 return []
 
@@ -1757,7 +1787,7 @@ class MemorySQL:
         return out
 
     async def search(self, query: str, limit: int = 8) -> List[MemorySearchHit]:
-        """Search the FTS index (path + content) and return best hits.
+        """Search indexed workspace documents and return best hits.
 
         This is intentionally simple: BM25 + snippets is enough for v1, and keeps
         the implementation portable (no extra deps).
@@ -1768,27 +1798,56 @@ class MemorySQL:
         if not query_s:
             return []
 
+        backend = _effective_db_backend()
         async with self._lock:
             async with db.connect() as conn:
-                rows = await fetch_all(
-                    conn,
-                    """
-                    SELECT path, snippet(memory_fts, 1, '[', ']', '…', 16) AS snippet,
-                           bm25(memory_fts) AS score
-                    FROM memory_fts
-                    WHERE memory_fts MATCH ?
-                    ORDER BY score
-                    LIMIT ?
-                    """,
-                    (query_s, int(limit)),
-                )
+                if backend == "postgres":
+                    rows = await fetch_all(
+                        conn,
+                        """
+                        SELECT path,
+                               SUBSTRING(COALESCE(content, '') FROM 1 FOR 240) AS snippet,
+                               ts_rank_cd(
+                                   to_tsvector('simple', COALESCE(path, '') || ' ' || COALESCE(content, '')),
+                                   plainto_tsquery('simple', ?)
+                               ) AS score
+                        FROM memory_docs
+                        WHERE to_tsvector('simple', COALESCE(path, '') || ' ' || COALESCE(content, ''))
+                              @@ plainto_tsquery('simple', ?)
+                        ORDER BY score DESC, path ASC
+                        LIMIT ?
+                        """,
+                        (query_s, query_s, int(limit)),
+                    )
+                else:
+                    rows = await fetch_all(
+                        conn,
+                        """
+                        SELECT path, snippet(memory_fts, 1, '[', ']', '…', 16) AS snippet,
+                               bm25(memory_fts) AS score
+                        FROM memory_fts
+                        WHERE memory_fts MATCH ?
+                        ORDER BY score
+                        LIMIT ?
+                        """,
+                        (query_s, int(limit)),
+                    )
         hits: List[MemorySearchHit] = []
         for r in rows:
+            path = _row_get(r, "path", None)
+            snippet = _row_get(r, "snippet", None)
+            score = _row_get(r, "score", None)
+            if path is None:
+                path = r[0]
+            if snippet is None:
+                snippet = r[1]
+            if score is None:
+                score = r[2]
             hits.append(
                 MemorySearchHit(
-                    path=str(r[0]),
-                    snippet=str(r[1]),
-                    rank=float(r[2]) if r[2] is not None else 0.0,
+                    path=str(path),
+                    snippet=str(snippet),
+                    rank=float(score) if score is not None else 0.0,
                 )
             )
         return hits
@@ -2178,7 +2237,10 @@ class MemorySQL:
             out["autonomy_actions_error"] = str(e)
 
         try:
-            if bool(getattr(settings, "db_wal_checkpoint_on_housekeep", True)):
+            if (
+                bool(getattr(settings, "db_wal_checkpoint_on_housekeep", True))
+                and _effective_db_backend() == "sqlite"
+            ):
                 mode = (
                     str(getattr(settings, "db_wal_checkpoint_mode", "TRUNCATE") or "TRUNCATE")
                     .upper()

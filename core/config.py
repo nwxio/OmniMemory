@@ -26,8 +26,14 @@ class Settings(BaseSettings):
 
     # Core
     api_key: str = "devkey"
-    # sqlite | postgres
+    # Legacy DB selector (sqlite | postgres). New deployments should prefer
+    # OMNIMIND_POSTGRES_ENABLED / OMNIMIND_SQLITE_ENABLED flags.
     db_type: str = "sqlite"
+    postgres_enabled: bool | None = None
+    sqlite_enabled: bool | None = None
+    # If true, backend mismatch is fatal. Example: requested=postgres but
+    # effective=sqlite will raise at startup instead of silent fallback.
+    db_strict_backend: bool = False
     db_path: str = "/data/omnimind.db"
 
     # PostgreSQL (optional backend)
