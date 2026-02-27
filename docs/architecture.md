@@ -14,6 +14,10 @@ It covers the full end-to-end flow:
 - storage and optional infrastructure backends
 - provider and quality layers
 
+Detailed data relationships and memory domain map:
+
+- `docs/memory-data-model.md`
+
 ## Generate or refresh diagram
 
 Install optional diagram libraries:
@@ -35,3 +39,4 @@ python3 scripts/generate_architecture_diagram.py
 3. `core/memory.py` orchestrates retrieval, KB, KG, extraction, session, and correction workflows.
 4. Subsystems persist data to SQLite by default, with optional PostgreSQL/Redis/Neo4j paths.
 5. Reliability and safety layers provide circuit breaking, fallback behavior, and health visibility.
+6. Temporal KG operations persist current state (`kg_triples`) and event history (`kg_triple_events` / `KGTemporalEvent`) for as-of reasoning.

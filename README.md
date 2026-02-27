@@ -44,11 +44,63 @@ For reliable model behavior and correct memory usage, configure your agent with 
 - Reliability controls: circuit breaker, fallback mode, rate limiting, health endpoint.
 - Multilingual heuristics for `ru/uk/en` with universal Unicode-safe token handling.
 
+## Technology stack
+
+- Runtime: `Python 3.11+`, `FastMCP`, `Pydantic Settings`, asyncio-first service design.
+- Primary storage: `SQLite` (default) with optional `PostgreSQL` backend parity.
+- Optional infra: `Redis` (cache/rate limiting), `Neo4j` (graph backend).
+- Retrieval: BM25/token search + vector semantic search + hybrid ranking.
+- Embeddings providers: `fastembed` (local), `OpenAI`, `Cohere`.
+- LLM providers: local and cloud providers via unified client (`core/llm/client.py`).
+- Quality gates: `Ruff`, `Pytest`, focused `mypy` checks in CI.
+
+## What is stored in memory
+
+### Core memory domains
+
+| Domain | Purpose | Typical tools | Storage shape |
+|---|---|---|---|
+| Lessons | Durable technical takeaways and runbooks | `memory_upsert`, `memory_search_lessons` | key/value + metadata + timestamps |
+| Preferences | User/agent stable preferences | `memory_upsert`, `memory_search_preferences` | key/value + source/lock/scope fields |
+| Episodes | Session-level event log for consolidation | `memory_consolidate` | timestamped events and payloads |
+| Working/session memory | Short-lived context per session | `memory_search_all`, `cross_session_*` | session-scoped records |
+| Conversations | Ordered chat transcript storage | `conversation_*` | append-only messages with role/model/tokens |
+| Knowledge base | Parsed documents from text/files/URLs | `kb_*` | docs + source metadata + search index |
+| Knowledge graph | Facts as triples + graph traversal | `kg_*` | entities/predicates/triples (+ temporal events) |
+| Procedural memory | How-to procedures and steps | `memory_add_procedure` | key/title/steps/metadata |
+| Semantic graph | Generic entities and typed relations | `memory_add_entity`, `memory_add_relation` | entity nodes + relation edges |
+
+### Retention defaults (configurable)
+
+- Lessons: 90 days (`OMNIMIND_MEMORY_LESSONS_TTL_DAYS`)
+- Episodes: 60 days (`OMNIMIND_MEMORY_EPISODES_TTL_DAYS`)
+- Preferences: 180 days (`OMNIMIND_MEMORY_PREFERENCES_TTL_DAYS`)
+
+## How components are connected
+
+### End-to-end flow
+
+1. MCP clients call tools/resources in `mcp_server/memory_tools.py` and `mcp_server/memory_resources.py`.
+2. Wrappers ensure DB readiness and apply safety controls (rate limits, health checks, metrics).
+3. `core/memory.py` orchestrates memory, retrieval, KB, KG, extraction, and cross-session workflows.
+4. Subsystems persist through `core/db.py` using SQLite/Postgres, optional Redis, optional Neo4j.
+5. Retrieval and graph operations feed back into agent context injection and downstream reasoning.
+
+### Relationship map (high-level)
+
+- `conversation_messages` -> feed `episodes` -> promoted into `lessons/preferences` by consolidation.
+- `memory_docs` + vector chunks -> hybrid search (`keyword + semantic`) for context recall.
+- `kg_triples` represent current graph fact state; `kg_triple_events` preserve change history.
+- Temporal KG tools (`as_of`, `history`, `path_as_of`) reason over event history, not only current state.
+- Cross-session layer merges durable memory + recent session traces into token-bounded context bundles.
+
 ## Architecture diagram
 
 - [Architecture diagram (PNG)](docs/architecture.png)
 
 Diagram source notes: `docs/architecture.md`
+
+Detailed data model and relationship map: `docs/memory-data-model.md`
 
 ## Architecture overview
 
@@ -452,6 +504,7 @@ python -m mypy core/security/audit.py core/security/gdpr.py core/search/bm25.py 
 - Environment presets: `ENV_CONFIGS.md`
 - Docker deployment: `docker/README.md`
 - Install notes: `INSTALL.md`
+- Memory data model and relationships: `docs/memory-data-model.md`
 - Contributing guide: `CONTRIBUTING.md`
 - Code of conduct: `CODE_OF_CONDUCT.md`
 - Release process: `RELEASE_CHECKLIST.md`
