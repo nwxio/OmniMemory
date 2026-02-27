@@ -10,6 +10,10 @@ A production-friendly memory platform with an MCP server interface.
 `memory-mcp` combines structured memory, semantic retrieval, knowledge graph operations,
 cross-session context, and safety controls in a self-hosted package.
 
+## Project overview
+
+![Project overview](docs/project-overview.jpg)
+
 ## Why this project
 
 - Works as an MCP backend for coding agents and assistants.
