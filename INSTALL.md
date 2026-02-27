@@ -128,6 +128,7 @@ python -c "from core.memory import MemoryStore; import asyncio; print(asyncio.ru
 | `OMNIMIND_SQLITE_ENABLED` | `unset` | Preferred DB toggle. `true` requests SQLite backend |
 | `OMNIMIND_DB_STRICT_BACKEND` | `false` | If `true`, requested/effective backend mismatch fails startup |
 | `OMNIMIND_DB_PATH` | `./memory.db` | SQLite file path |
+| `OMNIMIND_KG_TEMPORAL_SINGLE_ACTIVE_PREDICATES` | `works_for,belongs_to,prefers` | Comma-separated predicates that allow only one active object per subject+predicate |
 | `OMNIMIND_REDIS_ENABLED` | `false` | Enable Redis cache/rate limiting |
 | `OMNIMIND_LLM_PROVIDER` | `ollama` | LLM provider |
 | `OMNIMIND_EMBEDDINGS_PROVIDER` | `fastembed` | Embeddings provider |
@@ -140,6 +141,21 @@ Backend selection rules:
 - `OMNIMIND_DB_STRICT_BACKEND=true` makes fallback fatal (startup error), so mismatch cannot be ignored.
 - PostgreSQL backend is activated when postgres mode is requested and a PostgreSQL driver is installed.
 - Verify real runtime backend via `memory_health` (`db_backend.effective`).
+
+### Temporal knowledge graph
+
+The graph supports temporal fact evolution and as-of reasoning:
+
+- `kg_upsert_fact(action="assert"|"retract")`
+- `kg_get_triples_as_of(as_of=...)`
+- `kg_get_fact_history(...)`
+- `kg_find_path_as_of(as_of=...)`
+- `kg_get_entity_timeline_summary(entity=...)`
+
+Temporal policy (default):
+
+- `single_active`: `works_for`, `belongs_to`, `prefers`
+- `multi_active`: all other predicates
 
 ### LLM provider examples
 

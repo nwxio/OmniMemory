@@ -19,6 +19,7 @@ class DatabaseSettings(BaseSettings):
     postgres_db: str = "memory"
     postgres_user: str = "postgres"
     postgres_password: str = ""
+    kg_temporal_single_active_predicates: str = "works_for,belongs_to,prefers"
 
     # Redis
     redis_enabled: bool = False

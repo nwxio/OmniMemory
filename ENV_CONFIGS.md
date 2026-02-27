@@ -93,6 +93,7 @@ DB toggle priority:
 - Optional strict mode: set `OMNIMIND_DB_STRICT_BACKEND=true` to fail startup on requested/effective mismatch.
 - PostgreSQL backend requires a PostgreSQL Python driver (`psycopg2`/`psycopg`).
 - Check active backend via `memory_health` (`db_backend.effective`).
+- Temporal KG policy: `OMNIMIND_KG_TEMPORAL_SINGLE_ACTIVE_PREDICATES=works_for,belongs_to,prefers`.
 
 ## Critical variables to review before deployment
 

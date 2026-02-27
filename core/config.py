@@ -186,6 +186,9 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = ""
     neo4j_database: str = "neo4j"
+    # Comma-separated predicates that should keep only one active object
+    # per (subject, predicate) in temporal KG mode.
+    kg_temporal_single_active_predicates: str = "works_for,belongs_to,prefers"
     vector_memory_dimensions: int = 384
     embeddings_provider: str = "fastembed"  # fastembed, openai, cohere
 

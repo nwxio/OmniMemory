@@ -1826,6 +1826,116 @@ class MemoryStore:
         kg = knowledge_graph()
         return await kg.get_stats()
 
+    async def kg_upsert_fact(
+        self,
+        subject: str,
+        predicate: str,
+        object_name: str,
+        action: str = "assert",
+        confidence: float = 1.0,
+        source_type: str = "text",
+        source_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        observed_at: Optional[str] = None,
+        valid_from: Optional[str] = None,
+        valid_to: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Upsert temporal fact state in knowledge graph (assert/retract)."""
+        kg = knowledge_graph()
+        return await kg.upsert_fact(
+            subject=subject,
+            predicate=predicate,
+            object_name=object_name,
+            action=action,
+            confidence=confidence,
+            source_type=source_type,
+            source_id=source_id,
+            session_id=session_id,
+            metadata=metadata,
+            observed_at=observed_at,
+            valid_from=valid_from,
+            valid_to=valid_to,
+        )
+
+    async def kg_get_triples_as_of(
+        self,
+        as_of: Optional[str] = None,
+        subject: Optional[str] = None,
+        predicate: Optional[str] = None,
+        object_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Get triples valid at a given timestamp."""
+        kg = knowledge_graph()
+        return await kg.get_triples_as_of(
+            as_of=as_of,
+            subject=subject,
+            predicate=predicate,
+            object_name=object_name,
+            session_id=session_id,
+            limit=limit,
+        )
+
+    async def kg_get_fact_history(
+        self,
+        subject: Optional[str] = None,
+        predicate: Optional[str] = None,
+        object_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Get chronological event history for KG facts."""
+        kg = knowledge_graph()
+        return await kg.get_fact_history(
+            subject=subject,
+            predicate=predicate,
+            object_name=object_name,
+            session_id=session_id,
+            limit=limit,
+        )
+
+    async def kg_find_path_as_of(
+        self,
+        from_entity: str,
+        to_entity: str,
+        as_of: Optional[str] = None,
+        max_depth: int = 3,
+    ) -> Optional[dict[str, Any]]:
+        """Find path in graph as-of a timestamp."""
+        kg = knowledge_graph()
+        path = await kg.find_path_as_of(
+            from_entity=from_entity,
+            to_entity=to_entity,
+            as_of=as_of,
+            max_depth=max_depth,
+        )
+        if path:
+            return {
+                "nodes": path.nodes,
+                "edges": path.edges,
+                "length": path.length,
+                "confidence": path.confidence,
+            }
+        return None
+
+    async def kg_get_entity_timeline_summary(
+        self,
+        entity: str,
+        predicate: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Get aggregated temporal timeline summary for an entity."""
+        kg = knowledge_graph()
+        return await kg.get_entity_timeline_summary(
+            entity=entity,
+            predicate=predicate,
+            session_id=session_id,
+            limit=limit,
+        )
+
     async def kg_clear(self, session_id: Optional[str] = None) -> dict[str, Any]:
         """Clear knowledge graph data."""
         kg = knowledge_graph()

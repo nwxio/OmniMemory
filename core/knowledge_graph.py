@@ -91,6 +91,50 @@ ENTITY_TYPES = {
     "preference": ["preference", "setting", "config"],
 }
 
+TEMPORAL_RELATION_POLICY: dict[str, str] = {
+    # Single-active: at most one active object per (subject, predicate).
+    "works_for": "single_active",
+    "belongs_to": "single_active",
+    "prefers": "single_active",
+}
+
+DEFAULT_SINGLE_ACTIVE_PREDICATES = ",".join(TEMPORAL_RELATION_POLICY.keys())
+
+
+def _normalize_ts(value: Optional[str], *, default_now: bool = False) -> Optional[str]:
+    if value is None:
+        if default_now:
+            return _utc_now()
+        return None
+    s = str(value).strip()
+    if not s:
+        if default_now:
+            return _utc_now()
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return _utc_now() if default_now else None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat()
+
+
+def _temporal_policy(predicate: str) -> str:
+    configured = str(
+        getattr(settings, "kg_temporal_single_active_predicates", DEFAULT_SINGLE_ACTIVE_PREDICATES)
+        or ""
+    )
+    single_active = {
+        token.strip().lower() for token in configured.replace(";", ",").split(",") if token.strip()
+    }
+    key = str(predicate or "").strip().lower()
+    return "single_active" if key in single_active else "multi_active"
+
 
 @dataclass
 class Triple:
@@ -210,6 +254,23 @@ class KnowledgeGraph:
                 r.source_id = $source_id,
                 r.session_id = $session_id,
                 r.created_at = $now,
+                r.updated_at = $now,
+                r.valid_from = $now,
+                r.valid_to = NULL,
+                r.is_active = true,
+                r.version = 1,
+                r.last_event_type = 'assert',
+                r.metadata_json = $metadata_json
+            ON MATCH SET
+                r.confidence = $confidence,
+                r.source_type = $source_type,
+                r.source_id = $source_id,
+                r.session_id = $session_id,
+                r.updated_at = $now,
+                r.valid_to = NULL,
+                r.is_active = true,
+                r.version = coalesce(r.version, 1) + 1,
+                r.last_event_type = 'assert',
                 r.metadata_json = $metadata_json
             RETURN r.id AS triple_id
             """,
@@ -241,6 +302,623 @@ class KnowledgeGraph:
             "object": object_name,
         }
 
+    async def _insert_temporal_event_neo4j(self, payload: dict[str, Any]) -> str:
+        neo4j = self._neo4j_backend()
+        if neo4j is None:
+            raise RuntimeError("neo4j backend is not active")
+
+        event_id = new_id("kgev")
+        await neo4j.query(
+            """
+            CREATE (e:KGTemporalEvent {
+                id: $event_id,
+                triple_id: $triple_id,
+                triple_key: $triple_key,
+                subject: $subject,
+                subject_id: $subject_id,
+                predicate: $predicate,
+                object: $object,
+                object_id: $object_id,
+                action: $action,
+                observed_at: $observed_at,
+                valid_from: $valid_from,
+                valid_to: $valid_to,
+                state_active: $state_active,
+                state_version: $state_version,
+                confidence: $confidence,
+                source_type: $source_type,
+                source_id: $source_id,
+                session_id: $session_id,
+                metadata_json: $metadata_json,
+                created_at: $created_at
+            })
+            """,
+            {**payload, "event_id": event_id},
+        )
+        return event_id
+
+    async def _upsert_fact_neo4j(
+        self,
+        subject: str,
+        predicate: str,
+        object_name: str,
+        *,
+        action: str,
+        confidence: float,
+        source_type: str,
+        source_id: Optional[str],
+        session_id: Optional[str],
+        metadata: Optional[dict],
+        observed_at: str,
+        valid_from: str,
+        valid_to: Optional[str],
+        policy: str,
+    ) -> dict[str, Any]:
+        neo4j = self._neo4j_backend()
+        if neo4j is None:
+            raise RuntimeError("neo4j backend is not active")
+
+        now = _utc_now()
+        subj_id = _hash_name(subject)
+        obj_id = _hash_name(object_name)
+        triple_key = f"{subj_id}|{predicate}|{obj_id}"
+        triple_id = _hash_name(triple_key)
+        meta_json = json.dumps(metadata or {})
+
+        if action == "assert":
+            closed_count = 0
+            if policy == "single_active":
+                rows_to_close = await neo4j.query(
+                    """
+                    MATCH (s:Entity {name: $subject})-[r:RELATES_TO]->(o:Entity)
+                    WHERE r.predicate = $predicate
+                      AND coalesce(r.is_active, true) = true
+                      AND o.name <> $object_name
+                    RETURN
+                        r.id AS triple_id,
+                        r.triple_key AS triple_key,
+                        o.name AS object_name,
+                        o.id AS object_id,
+                        coalesce(r.version, 1) AS version,
+                        coalesce(r.confidence, 1.0) AS confidence,
+                        r.source_type AS source_type,
+                        r.source_id AS source_id,
+                        r.session_id AS session_id,
+                        r.metadata_json AS metadata_json,
+                        r.valid_from AS valid_from
+                    """,
+                    {
+                        "subject": subject,
+                        "predicate": predicate,
+                        "object_name": object_name,
+                    },
+                )
+                for row in rows_to_close:
+                    next_version = int(row.get("version") or 1) + 1
+                    await neo4j.query(
+                        """
+                        MATCH (:Entity)-[r:RELATES_TO {id: $triple_id}]->(:Entity)
+                        SET r.is_active = false,
+                            r.valid_to = $observed_at,
+                            r.updated_at = $now,
+                            r.version = $next_version,
+                            r.last_event_type = 'close_replaced'
+                        RETURN r.id AS triple_id
+                        """,
+                        {
+                            "triple_id": row.get("triple_id"),
+                            "observed_at": observed_at,
+                            "now": now,
+                            "next_version": next_version,
+                        },
+                    )
+                    await self._insert_temporal_event_neo4j(
+                        {
+                            "triple_id": row.get("triple_id"),
+                            "triple_key": row.get("triple_key"),
+                            "subject": subject,
+                            "subject_id": subj_id,
+                            "predicate": predicate,
+                            "object": row.get("object_name"),
+                            "object_id": row.get("object_id"),
+                            "action": "close_replaced",
+                            "observed_at": observed_at,
+                            "valid_from": row.get("valid_from"),
+                            "valid_to": observed_at,
+                            "state_active": False,
+                            "state_version": next_version,
+                            "confidence": float(row.get("confidence") or 1.0),
+                            "source_type": row.get("source_type"),
+                            "source_id": row.get("source_id"),
+                            "session_id": row.get("session_id"),
+                            "metadata_json": str(row.get("metadata_json") or "{}"),
+                            "created_at": now,
+                        }
+                    )
+                    closed_count += 1
+
+            rows = await neo4j.query(
+                """
+                MERGE (s:Entity {name: $subject})
+                ON CREATE SET
+                    s.id = $subj_id,
+                    s.entity_type = $subject_type,
+                    s.created_at = $now,
+                    s.mention_count = 1
+                ON MATCH SET s.mention_count = coalesce(s.mention_count, 0) + 1
+                MERGE (o:Entity {name: $object_name})
+                ON CREATE SET
+                    o.id = $obj_id,
+                    o.entity_type = $object_type,
+                    o.created_at = $now,
+                    o.mention_count = 1
+                ON MATCH SET o.mention_count = coalesce(o.mention_count, 0) + 1
+                MERGE (s)-[r:RELATES_TO {triple_key: $triple_key}]->(o)
+                ON CREATE SET
+                    r.id = $triple_id,
+                    r.predicate = $predicate,
+                    r.confidence = $confidence,
+                    r.source_type = $source_type,
+                    r.source_id = $source_id,
+                    r.session_id = $session_id,
+                    r.created_at = $observed_at,
+                    r.updated_at = $now,
+                    r.valid_from = $valid_from,
+                    r.valid_to = NULL,
+                    r.is_active = true,
+                    r.version = 1,
+                    r.last_event_type = 'assert',
+                    r.metadata_json = $metadata_json
+                ON MATCH SET
+                    r.confidence = $confidence,
+                    r.source_type = $source_type,
+                    r.source_id = $source_id,
+                    r.session_id = $session_id,
+                    r.updated_at = $now,
+                    r.valid_from = CASE
+                        WHEN coalesce(r.is_active, true) THEN coalesce(r.valid_from, $valid_from)
+                        ELSE $valid_from
+                    END,
+                    r.valid_to = NULL,
+                    r.is_active = true,
+                    r.version = coalesce(r.version, 1) + 1,
+                    r.last_event_type = 'assert',
+                    r.metadata_json = $metadata_json
+                RETURN r.id AS triple_id, coalesce(r.version, 1) AS version, r.valid_from AS valid_from
+                """,
+                {
+                    "subject": subject,
+                    "subj_id": subj_id,
+                    "subject_type": self._classify_entity(subject),
+                    "object_name": object_name,
+                    "obj_id": obj_id,
+                    "object_type": self._classify_entity(object_name),
+                    "triple_key": triple_key,
+                    "triple_id": triple_id,
+                    "predicate": predicate,
+                    "confidence": confidence,
+                    "source_type": source_type,
+                    "source_id": source_id,
+                    "session_id": session_id,
+                    "observed_at": observed_at,
+                    "valid_from": valid_from,
+                    "metadata_json": meta_json,
+                    "now": now,
+                },
+            )
+            if rows and rows[0].get("triple_id"):
+                triple_id = str(rows[0]["triple_id"])
+            version = int(rows[0].get("version") or 1) if rows else 1
+            persisted_valid_from = (
+                str(rows[0].get("valid_from") or valid_from) if rows else valid_from
+            )
+
+            await self._insert_temporal_event_neo4j(
+                {
+                    "triple_id": triple_id,
+                    "triple_key": triple_key,
+                    "subject": subject,
+                    "subject_id": subj_id,
+                    "predicate": predicate,
+                    "object": object_name,
+                    "object_id": obj_id,
+                    "action": "assert",
+                    "observed_at": observed_at,
+                    "valid_from": persisted_valid_from,
+                    "valid_to": None,
+                    "state_active": True,
+                    "state_version": version,
+                    "confidence": confidence,
+                    "source_type": source_type,
+                    "source_id": source_id,
+                    "session_id": session_id,
+                    "metadata_json": meta_json,
+                    "created_at": now,
+                }
+            )
+
+            return {
+                "ok": True,
+                "status": "asserted",
+                "policy": policy,
+                "closed_count": closed_count,
+                "triple_id": triple_id,
+                "subject": subject,
+                "predicate": predicate,
+                "object": object_name,
+                "valid_from": persisted_valid_from,
+                "valid_to": None,
+                "version": version,
+            }
+
+        rows = await neo4j.query(
+            """
+            MATCH (s:Entity {name: $subject})-[r:RELATES_TO {triple_key: $triple_key}]->(o:Entity {name: $object_name})
+            RETURN
+                r.id AS triple_id,
+                r.triple_key AS triple_key,
+                s.id AS subject_id,
+                o.id AS object_id,
+                coalesce(r.version, 1) AS version,
+                coalesce(r.is_active, true) AS is_active,
+                r.valid_from AS valid_from,
+                r.valid_to AS valid_to,
+                coalesce(r.confidence, 1.0) AS confidence,
+                r.source_type AS source_type,
+                r.source_id AS source_id,
+                r.session_id AS session_id,
+                r.metadata_json AS metadata_json
+            """,
+            {
+                "subject": subject,
+                "object_name": object_name,
+                "triple_key": triple_key,
+            },
+        )
+        if not rows:
+            return {
+                "ok": True,
+                "status": "not_found",
+                "policy": policy,
+                "subject": subject,
+                "predicate": predicate,
+                "object": object_name,
+            }
+
+        row = rows[0]
+        triple_id = str(row.get("triple_id") or triple_id)
+        is_active = bool(row.get("is_active", True))
+        current_version = int(row.get("version") or 1)
+        close_ts = valid_to or observed_at
+        if is_active:
+            next_version = current_version + 1
+            await neo4j.query(
+                """
+                MATCH (:Entity)-[r:RELATES_TO {id: $triple_id}]->(:Entity)
+                SET r.is_active = false,
+                    r.valid_to = $close_ts,
+                    r.updated_at = $now,
+                    r.version = $next_version,
+                    r.last_event_type = 'retract'
+                RETURN r.id AS triple_id
+                """,
+                {
+                    "triple_id": triple_id,
+                    "close_ts": close_ts,
+                    "now": now,
+                    "next_version": next_version,
+                },
+            )
+            status = "retracted"
+        else:
+            next_version = current_version
+            status = "already_inactive"
+
+        await self._insert_temporal_event_neo4j(
+            {
+                "triple_id": triple_id,
+                "triple_key": row.get("triple_key") or triple_key,
+                "subject": subject,
+                "subject_id": row.get("subject_id") or subj_id,
+                "predicate": predicate,
+                "object": object_name,
+                "object_id": row.get("object_id") or obj_id,
+                "action": "retract",
+                "observed_at": observed_at,
+                "valid_from": row.get("valid_from"),
+                "valid_to": close_ts if is_active else row.get("valid_to"),
+                "state_active": False,
+                "state_version": next_version,
+                "confidence": float(row.get("confidence") or 1.0),
+                "source_type": row.get("source_type"),
+                "source_id": row.get("source_id"),
+                "session_id": row.get("session_id"),
+                "metadata_json": str(row.get("metadata_json") or "{}"),
+                "created_at": now,
+            }
+        )
+
+        return {
+            "ok": True,
+            "status": status,
+            "policy": policy,
+            "triple_id": triple_id,
+            "subject": subject,
+            "predicate": predicate,
+            "object": object_name,
+            "valid_to": close_ts if is_active else row.get("valid_to"),
+            "version": next_version,
+        }
+
+    async def _get_triples_as_of_neo4j(
+        self,
+        *,
+        as_of: str,
+        subject: Optional[str],
+        predicate: Optional[str],
+        object_name: Optional[str],
+        session_id: Optional[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        neo4j = self._neo4j_backend()
+        if neo4j is None:
+            raise RuntimeError("neo4j backend is not active")
+
+        rows = await neo4j.query(
+            """
+            MATCH (e:KGTemporalEvent)
+            WHERE e.observed_at <= $as_of
+              AND ($subject IS NULL OR toLower(e.subject) = toLower($subject))
+              AND ($predicate IS NULL OR toLower(e.predicate) = toLower($predicate))
+              AND ($object_name IS NULL OR toLower(e.object) = toLower($object_name))
+              AND ($session_id IS NULL OR e.session_id = $session_id)
+            WITH e.triple_key AS triple_key, e
+            ORDER BY e.observed_at DESC, e.created_at DESC
+            WITH triple_key, collect(e)[0] AS latest
+            WHERE coalesce(latest.state_active, true) = true
+              AND (latest.valid_from IS NULL OR latest.valid_from <= $as_of)
+              AND (latest.valid_to IS NULL OR latest.valid_to > $as_of)
+            RETURN
+                latest.triple_id AS id,
+                latest.subject AS subject,
+                latest.predicate AS predicate,
+                latest.object AS object,
+                latest.confidence AS confidence,
+                latest.source_type AS source_type,
+                latest.source_id AS source_id,
+                latest.session_id AS session_id,
+                latest.observed_at AS created_at,
+                latest.metadata_json AS metadata_json,
+                latest.valid_from AS valid_from,
+                latest.valid_to AS valid_to,
+                latest.state_active AS is_active,
+                latest.state_version AS version,
+                latest.action AS last_event_type
+            ORDER BY created_at DESC
+            LIMIT $limit
+            """,
+            {
+                "as_of": as_of,
+                "subject": subject,
+                "predicate": predicate,
+                "object_name": object_name,
+                "session_id": session_id,
+                "limit": max(1, int(limit)),
+            },
+        )
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            metadata: dict[str, Any] = {}
+            raw_meta = row.get("metadata_json")
+            try:
+                if isinstance(raw_meta, str) and raw_meta:
+                    loaded = json.loads(raw_meta)
+                    if isinstance(loaded, dict):
+                        metadata = loaded
+            except Exception:
+                pass
+            out.append(
+                {
+                    "id": row.get("id"),
+                    "subject": row.get("subject"),
+                    "predicate": row.get("predicate"),
+                    "object": row.get("object"),
+                    "confidence": row.get("confidence"),
+                    "source_type": row.get("source_type"),
+                    "source_id": row.get("source_id"),
+                    "session_id": row.get("session_id"),
+                    "created_at": row.get("created_at"),
+                    "metadata": metadata,
+                    "valid_from": row.get("valid_from"),
+                    "valid_to": row.get("valid_to"),
+                    "is_active": bool(row.get("is_active", True)),
+                    "version": int(row.get("version") or 1),
+                    "last_event_type": row.get("last_event_type"),
+                    "as_of": as_of,
+                }
+            )
+        return out
+
+    async def _get_fact_history_neo4j(
+        self,
+        *,
+        subject: Optional[str],
+        predicate: Optional[str],
+        object_name: Optional[str],
+        session_id: Optional[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        neo4j = self._neo4j_backend()
+        if neo4j is None:
+            raise RuntimeError("neo4j backend is not active")
+
+        rows = await neo4j.query(
+            """
+            MATCH (e:KGTemporalEvent)
+            WHERE ($subject IS NULL OR toLower(e.subject) = toLower($subject))
+              AND ($predicate IS NULL OR toLower(e.predicate) = toLower($predicate))
+              AND ($object_name IS NULL OR toLower(e.object) = toLower($object_name))
+              AND ($session_id IS NULL OR e.session_id = $session_id)
+            RETURN
+                e.id AS event_id,
+                e.triple_id AS triple_id,
+                e.subject AS subject,
+                e.predicate AS predicate,
+                e.object AS object,
+                e.action AS action,
+                e.observed_at AS observed_at,
+                e.valid_from AS valid_from,
+                e.valid_to AS valid_to,
+                e.state_active AS state_active,
+                e.state_version AS state_version,
+                e.confidence AS confidence,
+                e.source_type AS source_type,
+                e.source_id AS source_id,
+                e.session_id AS session_id,
+                e.metadata_json AS metadata_json,
+                e.created_at AS created_at
+            ORDER BY observed_at DESC, created_at DESC
+            LIMIT $limit
+            """,
+            {
+                "subject": subject,
+                "predicate": predicate,
+                "object_name": object_name,
+                "session_id": session_id,
+                "limit": max(1, int(limit)),
+            },
+        )
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            metadata: dict[str, Any] = {}
+            raw_meta = row.get("metadata_json")
+            try:
+                if isinstance(raw_meta, str) and raw_meta:
+                    loaded = json.loads(raw_meta)
+                    if isinstance(loaded, dict):
+                        metadata = loaded
+            except Exception:
+                pass
+            out.append(
+                {
+                    "event_id": row.get("event_id"),
+                    "triple_id": row.get("triple_id"),
+                    "subject": row.get("subject"),
+                    "predicate": row.get("predicate"),
+                    "object": row.get("object"),
+                    "action": row.get("action"),
+                    "observed_at": row.get("observed_at"),
+                    "valid_from": row.get("valid_from"),
+                    "valid_to": row.get("valid_to"),
+                    "state_active": bool(row.get("state_active", False)),
+                    "state_version": int(row.get("state_version") or 1),
+                    "confidence": row.get("confidence"),
+                    "source_type": row.get("source_type"),
+                    "source_id": row.get("source_id"),
+                    "session_id": row.get("session_id"),
+                    "metadata": metadata,
+                    "created_at": row.get("created_at"),
+                }
+            )
+        return out
+
+    def _build_entity_timeline_summary(
+        self,
+        *,
+        entity: str,
+        events: list[dict[str, Any]],
+        predicate: Optional[str],
+        session_id: Optional[str],
+        limit: int,
+    ) -> dict[str, Any]:
+        entity_l = str(entity or "").strip().lower()
+        timeline: list[dict[str, Any]] = []
+        action_counts: dict[str, int] = {}
+        latest_by_triple: dict[str, dict[str, Any]] = {}
+        first_observed: Optional[str] = None
+        last_observed: Optional[str] = None
+
+        for ev in events:
+            subj = str(ev.get("subject") or "")
+            obj = str(ev.get("object") or "")
+            direction = (
+                "subject"
+                if subj.lower() == entity_l
+                else "object"
+                if obj.lower() == entity_l
+                else "other"
+            )
+            if direction == "other":
+                continue
+
+            action = str(ev.get("action") or "unknown")
+            action_counts[action] = int(action_counts.get(action, 0)) + 1
+
+            observed_at = str(ev.get("observed_at") or "")
+            if observed_at:
+                if first_observed is None or observed_at < first_observed:
+                    first_observed = observed_at
+                if last_observed is None or observed_at > last_observed:
+                    last_observed = observed_at
+
+            triple_id = str(ev.get("triple_id") or "")
+            if triple_id and triple_id not in latest_by_triple:
+                latest_by_triple[triple_id] = ev
+
+            timeline.append(
+                {
+                    "event_id": ev.get("event_id"),
+                    "triple_id": triple_id,
+                    "direction": direction,
+                    "subject": subj,
+                    "predicate": ev.get("predicate"),
+                    "object": obj,
+                    "action": action,
+                    "observed_at": ev.get("observed_at"),
+                    "valid_from": ev.get("valid_from"),
+                    "valid_to": ev.get("valid_to"),
+                    "state_active": bool(ev.get("state_active", False)),
+                    "state_version": int(ev.get("state_version") or 1),
+                }
+            )
+
+        active_relationships: list[dict[str, Any]] = []
+        for triple_id, ev in latest_by_triple.items():
+            if not bool(ev.get("state_active", False)):
+                continue
+            subj = str(ev.get("subject") or "")
+            obj = str(ev.get("object") or "")
+            direction = "subject" if subj.lower() == entity_l else "object"
+            counterpart = obj if direction == "subject" else subj
+            active_relationships.append(
+                {
+                    "triple_id": triple_id,
+                    "direction": direction,
+                    "counterpart": counterpart,
+                    "predicate": ev.get("predicate"),
+                    "valid_from": ev.get("valid_from"),
+                    "valid_to": ev.get("valid_to"),
+                    "state_version": int(ev.get("state_version") or 1),
+                    "last_action": ev.get("action"),
+                }
+            )
+
+        active_relationships.sort(key=lambda it: str(it.get("valid_from") or ""), reverse=True)
+
+        return {
+            "entity": entity,
+            "predicate_filter": predicate,
+            "session_id": session_id,
+            "total_events": len(timeline),
+            "action_counts": action_counts,
+            "first_observed_at": first_observed,
+            "last_observed_at": last_observed,
+            "active_relationships": active_relationships,
+            "timeline": timeline[: max(1, int(limit))],
+        }
+
     async def _get_triples_neo4j(
         self,
         subject: Optional[str],
@@ -260,6 +938,7 @@ class KnowledgeGraph:
               AND ($predicate IS NULL OR r.predicate = $predicate)
               AND ($object_name IS NULL OR o.name = $object_name)
               AND ($session_id IS NULL OR r.session_id = $session_id)
+              AND coalesce(r.is_active, true) = true
             RETURN
                 r.id AS id,
                 s.name AS subject,
@@ -270,6 +949,11 @@ class KnowledgeGraph:
                 r.source_id AS source_id,
                 r.session_id AS session_id,
                 r.created_at AS created_at,
+                r.valid_from AS valid_from,
+                r.valid_to AS valid_to,
+                coalesce(r.is_active, true) AS is_active,
+                coalesce(r.version, 1) AS version,
+                r.last_event_type AS last_event_type,
                 r.metadata_json AS metadata_json
             ORDER BY confidence DESC, created_at DESC
             LIMIT $limit
@@ -305,6 +989,11 @@ class KnowledgeGraph:
                     "source_id": row.get("source_id"),
                     "session_id": row.get("session_id"),
                     "created_at": row.get("created_at"),
+                    "valid_from": row.get("valid_from"),
+                    "valid_to": row.get("valid_to"),
+                    "is_active": bool(row.get("is_active", True)),
+                    "version": int(row.get("version") or 1),
+                    "last_event_type": row.get("last_event_type"),
                     "metadata": meta,
                 }
             )
@@ -327,6 +1016,7 @@ class KnowledgeGraph:
             out_rows = await neo4j.query(
                 """
                 MATCH (s:Entity {name: $entity})-[r:RELATES_TO]->(o:Entity)
+                WHERE coalesce(r.is_active, true) = true
                 RETURN s.name AS from_name, r.predicate AS predicate, o.name AS to_name,
                        'out' AS direction, coalesce(r.confidence, 1.0) AS confidence
                 ORDER BY confidence DESC
@@ -349,6 +1039,7 @@ class KnowledgeGraph:
             in_rows = await neo4j.query(
                 """
                 MATCH (s:Entity)-[r:RELATES_TO]->(o:Entity {name: $entity})
+                WHERE coalesce(r.is_active, true) = true
                 RETURN s.name AS from_name, r.predicate AS predicate, o.name AS to_name,
                        'in' AS direction, coalesce(r.confidence, 1.0) AS confidence
                 ORDER BY confidence DESC
@@ -437,6 +1128,7 @@ class KnowledgeGraph:
         rel_rows = await neo4j.query(
             """
             MATCH (:Entity)-[r:RELATES_TO]->(:Entity)
+            WHERE coalesce(r.is_active, true) = true
             RETURN count(r) AS triples, count(DISTINCT r.predicate) AS predicates
             """
         )
@@ -475,6 +1167,14 @@ class KnowledgeGraph:
             )
             await neo4j.query(
                 """
+                MATCH (e:KGTemporalEvent)
+                WHERE e.session_id = $session_id
+                DELETE e
+                """,
+                {"session_id": session_id},
+            )
+            await neo4j.query(
+                """
                 MATCH (n:Entity)
                 WHERE NOT (n)--()
                 DELETE n
@@ -493,6 +1193,821 @@ class KnowledgeGraph:
         return {"deleted": deleted}
 
     # --- Triple Operations ---
+
+    async def _ensure_entities_for_assert(
+        self,
+        conn: Any,
+        subject: str,
+        predicate: str,
+        object_name: str,
+        now: str,
+    ) -> tuple[str, str, str]:
+        subj_id = _hash_name(subject)
+        pred_id = _hash_name(predicate)
+        obj_id = _hash_name(object_name)
+
+        await conn.execute(
+            """INSERT INTO kg_subjects(id, name, entity_type, created_at, mention_count)
+               VALUES (?, ?, ?, ?, 1)
+               ON CONFLICT(name) DO UPDATE SET mention_count = kg_subjects.mention_count + 1""",
+            (subj_id, subject, self._classify_entity(subject), now),
+        )
+        await conn.execute(
+            """INSERT INTO kg_predicates(id, name, created_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(name) DO NOTHING""",
+            (pred_id, predicate, now),
+        )
+        await conn.execute(
+            """INSERT INTO kg_objects(id, name, entity_type, created_at, mention_count)
+               VALUES (?, ?, ?, ?, 1)
+               ON CONFLICT(name) DO UPDATE SET mention_count = kg_objects.mention_count + 1""",
+            (obj_id, object_name, self._classify_entity(object_name), now),
+        )
+        return subj_id, pred_id, obj_id
+
+    async def _resolve_existing_ids(
+        self,
+        conn: Any,
+        subject: str,
+        predicate: str,
+        object_name: str,
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        cur = await conn.execute("SELECT id FROM kg_subjects WHERE name = ?", (subject,))
+        subj_row = await cur.fetchone()
+        await cur.close()
+        cur = await conn.execute("SELECT id FROM kg_predicates WHERE name = ?", (predicate,))
+        pred_row = await cur.fetchone()
+        await cur.close()
+        cur = await conn.execute("SELECT id FROM kg_objects WHERE name = ?", (object_name,))
+        obj_row = await cur.fetchone()
+        await cur.close()
+
+        subj_id = str(subj_row["id"]) if subj_row else None
+        pred_id = str(pred_row["id"]) if pred_row else None
+        obj_id = str(obj_row["id"]) if obj_row else None
+        return subj_id, pred_id, obj_id
+
+    async def _insert_temporal_event(
+        self,
+        conn: Any,
+        *,
+        triple_id: Optional[str],
+        subject_id: str,
+        predicate_id: str,
+        object_id: str,
+        action: str,
+        observed_at: str,
+        valid_from: Optional[str],
+        valid_to: Optional[str],
+        state_active: int,
+        state_version: int,
+        confidence: Optional[float],
+        source_type: Optional[str],
+        source_id: Optional[str],
+        session_id: Optional[str],
+        metadata_json: str,
+        created_at: str,
+    ) -> str:
+        event_id = new_id("kgev")
+        await conn.execute(
+            """
+            INSERT INTO kg_triple_events(
+                id, triple_id, subject_id, predicate_id, object_id, action,
+                observed_at, valid_from, valid_to, state_active, state_version,
+                confidence, source_type, source_id, session_id, metadata_json, created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                event_id,
+                triple_id,
+                subject_id,
+                predicate_id,
+                object_id,
+                action,
+                observed_at,
+                valid_from,
+                valid_to,
+                int(state_active),
+                int(state_version),
+                confidence,
+                source_type,
+                source_id,
+                session_id,
+                metadata_json,
+                created_at,
+            ),
+        )
+        return event_id
+
+    async def upsert_fact(
+        self,
+        subject: str,
+        predicate: str,
+        object_name: str,
+        *,
+        action: str = "assert",
+        confidence: float = 1.0,
+        source_type: str = "text",
+        source_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        observed_at: Optional[str] = None,
+        valid_from: Optional[str] = None,
+        valid_to: Optional[str] = None,
+    ) -> dict[str, Any]:
+        act = str(action or "assert").strip().lower()
+        if act not in {"assert", "retract"}:
+            raise ValueError("action must be 'assert' or 'retract'")
+
+        now = _utc_now()
+        observed = _normalize_ts(observed_at, default_now=True) or now
+        effective_from = _normalize_ts(valid_from) or observed
+        effective_to = _normalize_ts(valid_to)
+        if act == "assert" and effective_to is not None and effective_to <= effective_from:
+            raise ValueError("valid_to must be greater than valid_from for assert action")
+
+        policy = _temporal_policy(predicate)
+
+        if self._neo4j_backend() is not None:
+            return await self._upsert_fact_neo4j(
+                subject=subject,
+                predicate=predicate,
+                object_name=object_name,
+                action=act,
+                confidence=confidence,
+                source_type=source_type,
+                source_id=source_id,
+                session_id=session_id,
+                metadata=metadata,
+                observed_at=observed,
+                valid_from=effective_from,
+                valid_to=effective_to,
+                policy=policy,
+            )
+
+        meta_json = json.dumps(metadata or {})
+
+        async with db.connect() as conn:
+            if act == "assert":
+                subj_id, pred_id, obj_id = await self._ensure_entities_for_assert(
+                    conn, subject, predicate, object_name, now
+                )
+
+                closed_count = 0
+                if policy == "single_active":
+                    cur = await conn.execute(
+                        """
+                        SELECT id, object_id, confidence, source_type, source_id, session_id,
+                               metadata_json, valid_from, version
+                        FROM kg_triples
+                        WHERE subject_id = ?
+                          AND predicate_id = ?
+                          AND object_id <> ?
+                          AND COALESCE(is_active, 1) = 1
+                        """,
+                        (subj_id, pred_id, obj_id),
+                    )
+                    rows_to_close = await cur.fetchall()
+                    await cur.close()
+                    for row in rows_to_close:
+                        next_version = int(row["version"] or 1) + 1
+                        await conn.execute(
+                            """
+                            UPDATE kg_triples
+                            SET is_active = 0,
+                                valid_to = ?,
+                                updated_at = ?,
+                                version = ?,
+                                last_event_type = 'close_replaced'
+                            WHERE id = ?
+                            """,
+                            (observed, now, next_version, row["id"]),
+                        )
+                        await self._insert_temporal_event(
+                            conn,
+                            triple_id=str(row["id"]),
+                            subject_id=subj_id,
+                            predicate_id=pred_id,
+                            object_id=str(row["object_id"]),
+                            action="close_replaced",
+                            observed_at=observed,
+                            valid_from=row["valid_from"],
+                            valid_to=observed,
+                            state_active=0,
+                            state_version=next_version,
+                            confidence=float(row["confidence"] or 1.0),
+                            source_type=row["source_type"],
+                            source_id=row["source_id"],
+                            session_id=row["session_id"],
+                            metadata_json=str(row["metadata_json"] or "{}"),
+                            created_at=now,
+                        )
+                        closed_count += 1
+
+                cur = await conn.execute(
+                    """
+                    SELECT id, created_at, valid_from, valid_to, is_active, version
+                    FROM kg_triples
+                    WHERE subject_id = ? AND predicate_id = ? AND object_id = ?
+                    """,
+                    (subj_id, pred_id, obj_id),
+                )
+                row = await cur.fetchone()
+                await cur.close()
+
+                if row:
+                    triple_id = str(row["id"])
+                    current_version = int(row["version"] or 1)
+                    next_version = current_version + 1
+                    prev_active = int(row["is_active"] or 0)
+                    next_valid_from = row["valid_from"] if prev_active else effective_from
+                    await conn.execute(
+                        """
+                        UPDATE kg_triples
+                        SET confidence = ?,
+                            source_type = ?,
+                            source_id = ?,
+                            session_id = ?,
+                            metadata_json = ?,
+                            updated_at = ?,
+                            valid_from = ?,
+                            valid_to = NULL,
+                            is_active = 1,
+                            version = ?,
+                            last_event_type = 'assert'
+                        WHERE id = ?
+                        """,
+                        (
+                            confidence,
+                            source_type,
+                            source_id,
+                            session_id,
+                            meta_json,
+                            now,
+                            next_valid_from,
+                            next_version,
+                            triple_id,
+                        ),
+                    )
+                else:
+                    triple_id = new_id("triple")
+                    next_version = 1
+                    await conn.execute(
+                        """
+                        INSERT INTO kg_triples(
+                            id, subject_id, predicate_id, object_id, confidence,
+                            source_type, source_id, session_id, created_at, updated_at,
+                            valid_from, valid_to, is_active, version, last_event_type, metadata_json
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            triple_id,
+                            subj_id,
+                            pred_id,
+                            obj_id,
+                            confidence,
+                            source_type,
+                            source_id,
+                            session_id,
+                            observed,
+                            now,
+                            effective_from,
+                            None,
+                            1,
+                            next_version,
+                            "assert",
+                            meta_json,
+                        ),
+                    )
+
+                await self._insert_temporal_event(
+                    conn,
+                    triple_id=triple_id,
+                    subject_id=subj_id,
+                    predicate_id=pred_id,
+                    object_id=obj_id,
+                    action="assert",
+                    observed_at=observed,
+                    valid_from=effective_from,
+                    valid_to=None,
+                    state_active=1,
+                    state_version=next_version,
+                    confidence=confidence,
+                    source_type=source_type,
+                    source_id=source_id,
+                    session_id=session_id,
+                    metadata_json=meta_json,
+                    created_at=now,
+                )
+
+                await conn.commit()
+                return {
+                    "ok": True,
+                    "status": "asserted",
+                    "policy": policy,
+                    "closed_count": closed_count,
+                    "triple_id": triple_id,
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": object_name,
+                    "valid_from": effective_from,
+                    "valid_to": None,
+                    "version": next_version,
+                }
+
+            subj_id, pred_id, obj_id = await self._resolve_existing_ids(
+                conn, subject, predicate, object_name
+            )
+            if not subj_id or not pred_id or not obj_id:
+                return {
+                    "ok": True,
+                    "status": "not_found",
+                    "policy": policy,
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": object_name,
+                }
+
+            cur = await conn.execute(
+                """
+                SELECT id, confidence, source_type, source_id, session_id,
+                       metadata_json, valid_from, valid_to, is_active, version
+                FROM kg_triples
+                WHERE subject_id = ? AND predicate_id = ? AND object_id = ?
+                """,
+                (subj_id, pred_id, obj_id),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            if not row:
+                return {
+                    "ok": True,
+                    "status": "not_found",
+                    "policy": policy,
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": object_name,
+                }
+
+            triple_id = str(row["id"])
+            current_version = int(row["version"] or 1)
+            if int(row["is_active"] or 0) == 1:
+                next_version = current_version + 1
+                close_ts = effective_to or observed
+                await conn.execute(
+                    """
+                    UPDATE kg_triples
+                    SET is_active = 0,
+                        valid_to = ?,
+                        updated_at = ?,
+                        version = ?,
+                        last_event_type = 'retract'
+                    WHERE id = ?
+                    """,
+                    (close_ts, now, next_version, triple_id),
+                )
+                state_active = 0
+                state_valid_to = close_ts
+                status = "retracted"
+            else:
+                next_version = current_version
+                state_active = 0
+                state_valid_to = row["valid_to"]
+                status = "already_inactive"
+
+            await self._insert_temporal_event(
+                conn,
+                triple_id=triple_id,
+                subject_id=subj_id,
+                predicate_id=pred_id,
+                object_id=obj_id,
+                action="retract",
+                observed_at=observed,
+                valid_from=row["valid_from"],
+                valid_to=state_valid_to,
+                state_active=state_active,
+                state_version=next_version,
+                confidence=float(row["confidence"] or 1.0),
+                source_type=row["source_type"],
+                source_id=row["source_id"],
+                session_id=row["session_id"],
+                metadata_json=str(row["metadata_json"] or "{}"),
+                created_at=now,
+            )
+
+            await conn.commit()
+            return {
+                "ok": True,
+                "status": status,
+                "policy": policy,
+                "triple_id": triple_id,
+                "subject": subject,
+                "predicate": predicate,
+                "object": object_name,
+                "valid_to": state_valid_to,
+                "version": next_version,
+            }
+
+    async def get_triples_as_of(
+        self,
+        as_of: Optional[str] = None,
+        subject: Optional[str] = None,
+        predicate: Optional[str] = None,
+        object_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        at = _normalize_ts(as_of, default_now=True) or _utc_now()
+        if self._neo4j_backend() is not None:
+            return await self._get_triples_as_of_neo4j(
+                as_of=at,
+                subject=subject,
+                predicate=predicate,
+                object_name=object_name,
+                session_id=session_id,
+                limit=limit,
+            )
+
+        query = """
+            WITH latest AS (
+                SELECT
+                    e.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.triple_id
+                        ORDER BY e.observed_at DESC, e.created_at DESC
+                    ) AS rn
+                FROM kg_triple_events e
+                JOIN kg_subjects s ON e.subject_id = s.id
+                JOIN kg_predicates p ON e.predicate_id = p.id
+                JOIN kg_objects o ON e.object_id = o.id
+                WHERE e.observed_at <= ?
+                  AND (? IS NULL OR LOWER(s.name) = LOWER(?))
+                  AND (? IS NULL OR LOWER(p.name) = LOWER(?))
+                  AND (? IS NULL OR LOWER(o.name) = LOWER(?))
+                  AND (? IS NULL OR e.session_id = ?)
+            )
+            SELECT
+                l.triple_id AS id,
+                s.name AS subject,
+                p.name AS predicate,
+                o.name AS object,
+                l.confidence,
+                l.source_type,
+                l.source_id,
+                l.session_id,
+                l.observed_at AS created_at,
+                l.metadata_json,
+                l.valid_from,
+                l.valid_to,
+                l.state_active AS is_active,
+                l.state_version AS version,
+                l.action AS last_event_type
+            FROM latest l
+            JOIN kg_subjects s ON l.subject_id = s.id
+            JOIN kg_predicates p ON l.predicate_id = p.id
+            JOIN kg_objects o ON l.object_id = o.id
+            WHERE l.rn = 1
+              AND l.state_active = 1
+              AND (l.valid_from IS NULL OR l.valid_from <= ?)
+              AND (l.valid_to IS NULL OR l.valid_to > ?)
+            ORDER BY l.observed_at DESC
+            LIMIT ?
+        """
+
+        async with db.connect() as conn:
+            cur = await conn.execute(
+                query,
+                (
+                    at,
+                    subject,
+                    subject,
+                    predicate,
+                    predicate,
+                    object_name,
+                    object_name,
+                    session_id,
+                    session_id,
+                    at,
+                    at,
+                    max(1, int(limit)),
+                ),
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            metadata: dict[str, Any] = {}
+            try:
+                raw_meta = row["metadata_json"]
+                if raw_meta:
+                    loaded = json.loads(raw_meta)
+                    if isinstance(loaded, dict):
+                        metadata = loaded
+            except Exception:
+                pass
+            out.append(
+                {
+                    "id": row["id"],
+                    "subject": row["subject"],
+                    "predicate": row["predicate"],
+                    "object": row["object"],
+                    "confidence": row["confidence"],
+                    "source_type": row["source_type"],
+                    "source_id": row["source_id"],
+                    "session_id": row["session_id"],
+                    "created_at": row["created_at"],
+                    "metadata": metadata,
+                    "valid_from": row["valid_from"],
+                    "valid_to": row["valid_to"],
+                    "is_active": bool(row["is_active"]),
+                    "version": int(row["version"] or 1),
+                    "last_event_type": row["last_event_type"],
+                    "as_of": at,
+                }
+            )
+        return out
+
+    async def get_fact_history(
+        self,
+        subject: Optional[str] = None,
+        predicate: Optional[str] = None,
+        object_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if self._neo4j_backend() is not None:
+            return await self._get_fact_history_neo4j(
+                subject=subject,
+                predicate=predicate,
+                object_name=object_name,
+                session_id=session_id,
+                limit=limit,
+            )
+
+        query = """
+            SELECT
+                e.id,
+                e.triple_id,
+                s.name AS subject,
+                p.name AS predicate,
+                o.name AS object,
+                e.action,
+                e.observed_at,
+                e.valid_from,
+                e.valid_to,
+                e.state_active,
+                e.state_version,
+                e.confidence,
+                e.source_type,
+                e.source_id,
+                e.session_id,
+                e.metadata_json,
+                e.created_at
+            FROM kg_triple_events e
+            JOIN kg_subjects s ON e.subject_id = s.id
+            JOIN kg_predicates p ON e.predicate_id = p.id
+            JOIN kg_objects o ON e.object_id = o.id
+            WHERE (? IS NULL OR LOWER(s.name) = LOWER(?))
+              AND (? IS NULL OR LOWER(p.name) = LOWER(?))
+              AND (? IS NULL OR LOWER(o.name) = LOWER(?))
+              AND (? IS NULL OR e.session_id = ?)
+            ORDER BY e.observed_at DESC, e.created_at DESC
+            LIMIT ?
+        """
+
+        async with db.connect() as conn:
+            cur = await conn.execute(
+                query,
+                (
+                    subject,
+                    subject,
+                    predicate,
+                    predicate,
+                    object_name,
+                    object_name,
+                    session_id,
+                    session_id,
+                    max(1, int(limit)),
+                ),
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            metadata: dict[str, Any] = {}
+            try:
+                raw_meta = row["metadata_json"]
+                if raw_meta:
+                    loaded = json.loads(raw_meta)
+                    if isinstance(loaded, dict):
+                        metadata = loaded
+            except Exception:
+                pass
+            out.append(
+                {
+                    "event_id": row["id"],
+                    "triple_id": row["triple_id"],
+                    "subject": row["subject"],
+                    "predicate": row["predicate"],
+                    "object": row["object"],
+                    "action": row["action"],
+                    "observed_at": row["observed_at"],
+                    "valid_from": row["valid_from"],
+                    "valid_to": row["valid_to"],
+                    "state_active": bool(row["state_active"]),
+                    "state_version": int(row["state_version"] or 1),
+                    "confidence": row["confidence"],
+                    "source_type": row["source_type"],
+                    "source_id": row["source_id"],
+                    "session_id": row["session_id"],
+                    "metadata": metadata,
+                    "created_at": row["created_at"],
+                }
+            )
+        return out
+
+    async def get_entity_timeline_summary(
+        self,
+        entity: str,
+        predicate: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        ent = str(entity or "").strip()
+        if not ent:
+            return {
+                "entity": entity,
+                "predicate_filter": predicate,
+                "session_id": session_id,
+                "total_events": 0,
+                "action_counts": {},
+                "first_observed_at": None,
+                "last_observed_at": None,
+                "active_relationships": [],
+                "timeline": [],
+            }
+
+        if self._neo4j_backend() is not None:
+            events = await self._get_fact_history_neo4j(
+                subject=None,
+                predicate=predicate,
+                object_name=None,
+                session_id=session_id,
+                limit=max(int(limit) * 10, int(limit), 100),
+            )
+            return self._build_entity_timeline_summary(
+                entity=ent,
+                events=events,
+                predicate=predicate,
+                session_id=session_id,
+                limit=limit,
+            )
+
+        query = """
+            SELECT
+                e.id,
+                e.triple_id,
+                s.name AS subject,
+                p.name AS predicate,
+                o.name AS object,
+                e.action,
+                e.observed_at,
+                e.valid_from,
+                e.valid_to,
+                e.state_active,
+                e.state_version,
+                e.confidence,
+                e.source_type,
+                e.source_id,
+                e.session_id,
+                e.metadata_json,
+                e.created_at
+            FROM kg_triple_events e
+            JOIN kg_subjects s ON e.subject_id = s.id
+            JOIN kg_predicates p ON e.predicate_id = p.id
+            JOIN kg_objects o ON e.object_id = o.id
+            WHERE (LOWER(s.name) = LOWER(?) OR LOWER(o.name) = LOWER(?))
+              AND (? IS NULL OR LOWER(p.name) = LOWER(?))
+              AND (? IS NULL OR e.session_id = ?)
+            ORDER BY e.observed_at DESC, e.created_at DESC
+            LIMIT ?
+        """
+        async with db.connect() as conn:
+            cur = await conn.execute(
+                query,
+                (
+                    ent,
+                    ent,
+                    predicate,
+                    predicate,
+                    session_id,
+                    session_id,
+                    max(int(limit) * 10, int(limit), 100),
+                ),
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            metadata: dict[str, Any] = {}
+            try:
+                raw_meta = row["metadata_json"]
+                if raw_meta:
+                    loaded = json.loads(raw_meta)
+                    if isinstance(loaded, dict):
+                        metadata = loaded
+            except Exception:
+                pass
+            events.append(
+                {
+                    "event_id": row["id"],
+                    "triple_id": row["triple_id"],
+                    "subject": row["subject"],
+                    "predicate": row["predicate"],
+                    "object": row["object"],
+                    "action": row["action"],
+                    "observed_at": row["observed_at"],
+                    "valid_from": row["valid_from"],
+                    "valid_to": row["valid_to"],
+                    "state_active": bool(row["state_active"]),
+                    "state_version": int(row["state_version"] or 1),
+                    "confidence": row["confidence"],
+                    "source_type": row["source_type"],
+                    "source_id": row["source_id"],
+                    "session_id": row["session_id"],
+                    "metadata": metadata,
+                    "created_at": row["created_at"],
+                }
+            )
+        return self._build_entity_timeline_summary(
+            entity=ent,
+            events=events,
+            predicate=predicate,
+            session_id=session_id,
+            limit=limit,
+        )
+
+    async def find_path_as_of(
+        self,
+        from_entity: str,
+        to_entity: str,
+        as_of: Optional[str] = None,
+        max_depth: int = 3,
+    ) -> Optional[GraphPath]:
+        at = _normalize_ts(as_of, default_now=True) or _utc_now()
+        visited: set[str] = set()
+        queue: list[tuple[str, list[str], list[str]]] = [(from_entity.lower(), [], [])]
+
+        while queue:
+            current, nodes, edges = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+
+            if current == to_entity.lower():
+                return GraphPath(
+                    nodes=nodes + [current],
+                    edges=edges,
+                    length=len(edges),
+                    confidence=1.0 / max(1, len(edges)),
+                )
+
+            if len(edges) >= max_depth:
+                continue
+
+            out_neighbors = await self.get_triples_as_of(
+                as_of=at,
+                subject=current,
+                limit=50,
+            )
+            for n in out_neighbors:
+                nxt = str(n.get("object") or "").lower()
+                if not nxt:
+                    continue
+                queue.append((nxt, nodes + [current], edges + [str(n.get("predicate") or "")]))
+
+            in_neighbors = await self.get_triples_as_of(
+                as_of=at,
+                object_name=current,
+                limit=50,
+            )
+            for n in in_neighbors:
+                nxt = str(n.get("subject") or "").lower()
+                if not nxt:
+                    continue
+                queue.append(
+                    (
+                        nxt,
+                        nodes + [current],
+                        edges + [f"<-{str(n.get('predicate') or '')}-"],
+                    )
+                )
+
+        return None
 
     async def add_triple(
         self,
@@ -520,81 +2035,19 @@ class KnowledgeGraph:
         Returns:
             dict with triple_id and status
         """
-        if self._neo4j_backend() is not None:
-            return await self._add_triple_neo4j(
-                subject=subject,
-                predicate=predicate,
-                object_name=object_name,
-                confidence=confidence,
-                source_type=source_type,
-                source_id=source_id,
-                session_id=session_id,
-                metadata=metadata,
-            )
-
-        now = _utc_now()
-
-        async with db.connect() as conn:
-            # Ensure subject exists
-            subj_id = _hash_name(subject)
-            await conn.execute(
-                """INSERT INTO kg_subjects(id, name, entity_type, created_at, mention_count)
-                   VALUES (?, ?, ?, ?, 1)
-                   ON CONFLICT(name) DO UPDATE SET mention_count = kg_subjects.mention_count + 1""",
-                (subj_id, subject, self._classify_entity(subject), now),
-            )
-
-            # Ensure predicate exists
-            pred_id = _hash_name(predicate)
-            await conn.execute(
-                """INSERT INTO kg_predicates(id, name, created_at)
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(name) DO NOTHING""",
-                (pred_id, predicate, now),
-            )
-
-            # Ensure object exists
-            obj_id = _hash_name(object_name)
-            await conn.execute(
-                """INSERT INTO kg_objects(id, name, entity_type, created_at, mention_count)
-                   VALUES (?, ?, ?, ?, 1)
-                   ON CONFLICT(name) DO UPDATE SET mention_count = kg_objects.mention_count + 1""",
-                (obj_id, object_name, self._classify_entity(object_name), now),
-            )
-
-            # Add triple (upsert)
-            triple_id = new_id("triple")
-            meta_json = json.dumps(metadata or {})
-
-            await conn.execute(
-                """INSERT OR IGNORE INTO kg_triples(id, subject_id, predicate_id, object_id, confidence, source_type, source_id, session_id, created_at, metadata_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    triple_id,
-                    subj_id,
-                    pred_id,
-                    obj_id,
-                    confidence,
-                    source_type,
-                    source_id,
-                    session_id,
-                    now,
-                    meta_json,
-                ),
-            )
-            cur = await conn.execute(
-                """SELECT id FROM kg_triples
-                   WHERE subject_id = ? AND predicate_id = ? AND object_id = ?""",
-                (subj_id, pred_id, obj_id),
-            )
-            row = await cur.fetchone()
-            if row and row["id"]:
-                triple_id = str(row["id"])
-
-            await conn.commit()
-
+        res = await self.upsert_fact(
+            subject=subject,
+            predicate=predicate,
+            object_name=object_name,
+            action="assert",
+            confidence=confidence,
+            source_type=source_type,
+            source_id=source_id,
+            session_id=session_id,
+            metadata=metadata,
+        )
         return {
-            "triple_id": triple_id,
+            "triple_id": res.get("triple_id"),
             "subject": subject,
             "predicate": predicate,
             "object": object_name,
@@ -658,12 +2111,13 @@ class KnowledgeGraph:
 
         query = """
             SELECT t.id, s.name as subject, p.name as predicate, o.name as object,
-                   t.confidence, t.source_type, t.source_id, t.session_id, t.created_at, t.metadata_json
+                   t.confidence, t.source_type, t.source_id, t.session_id, t.created_at, t.metadata_json,
+                   t.valid_from, t.valid_to, t.is_active, t.version, t.last_event_type
             FROM kg_triples t
             JOIN kg_subjects s ON t.subject_id = s.id
             JOIN kg_predicates p ON t.predicate_id = p.id
             JOIN kg_objects o ON t.object_id = o.id
-            WHERE 1=1
+            WHERE COALESCE(t.is_active, 1) = 1
         """
         params: list[Any] = []
 
@@ -708,6 +2162,11 @@ class KnowledgeGraph:
                     "session_id": row["session_id"],
                     "created_at": row["created_at"],
                     "metadata": meta,
+                    "valid_from": row["valid_from"],
+                    "valid_to": row["valid_to"],
+                    "is_active": bool(row["is_active"]),
+                    "version": int(row["version"] or 1),
+                    "last_event_type": row["last_event_type"],
                 }
             )
 
@@ -749,6 +2208,7 @@ class KnowledgeGraph:
                        JOIN kg_predicates p ON t.predicate_id = p.id
                        JOIN kg_objects o ON t.object_id = o.id
                        WHERE LOWER(s.name) = ?
+                         AND COALESCE(t.is_active, 1) = 1
                        ORDER BY t.confidence DESC LIMIT ?""",
                     (entity_lower, limit),
                 )
@@ -772,6 +2232,7 @@ class KnowledgeGraph:
                        JOIN kg_predicates p ON t.predicate_id = p.id
                        JOIN kg_objects o ON t.object_id = o.id
                        WHERE LOWER(o.name) = ?
+                         AND COALESCE(t.is_active, 1) = 1
                        ORDER BY t.confidence DESC LIMIT ?""",
                     (entity_lower, limit),
                 )
@@ -1061,7 +2522,9 @@ class KnowledgeGraph:
             row = await cur.fetchone()
             objects = int(row["c"]) if row else 0
 
-            cur = await conn.execute("SELECT COUNT(*) as c FROM kg_triples")
+            cur = await conn.execute(
+                "SELECT COUNT(*) as c FROM kg_triples WHERE COALESCE(is_active, 1) = 1"
+            )
             row = await cur.fetchone()
             triples = int(row["c"]) if row else 0
 
@@ -1087,9 +2550,13 @@ class KnowledgeGraph:
                     "DELETE FROM kg_triples WHERE session_id = ?", (session_id,)
                 )
                 deleted = cur.rowcount
+                await conn.execute(
+                    "DELETE FROM kg_triple_events WHERE session_id = ?", (session_id,)
+                )
             else:
                 cur = await conn.execute("DELETE FROM kg_triples")
                 deleted = cur.rowcount
+                await conn.execute("DELETE FROM kg_triple_events")
                 await conn.execute("DELETE FROM kg_subjects")
                 await conn.execute("DELETE FROM kg_predicates")
                 await conn.execute("DELETE FROM kg_objects")

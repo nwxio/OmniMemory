@@ -226,9 +226,14 @@ The server exposes the following MCP tools.
 ### Knowledge graph
 
 - `kg_add_triple`
+- `kg_upsert_fact`
 - `kg_get_triples`
+- `kg_get_triples_as_of`
+- `kg_get_fact_history`
+- `kg_get_entity_timeline_summary`
 - `kg_get_neighbors`
 - `kg_find_path`
+- `kg_find_path_as_of`
 - `kg_search_entities`
 - `kg_get_entity_facts`
 - `kg_stats`
@@ -354,6 +359,62 @@ async def demo_kg() -> None:
 
 
 asyncio.run(demo_kg())
+```
+
+### Example: temporal knowledge graph (evolving relationships)
+
+```python
+import asyncio
+from mcp_server.memory_tools import (
+    kg_upsert_fact,
+    kg_get_triples_as_of,
+    kg_get_fact_history,
+    kg_find_path_as_of,
+)
+
+
+async def demo_temporal() -> None:
+    await kg_upsert_fact(
+        "Alice",
+        "works_for",
+        "Acme",
+        action="assert",
+        observed_at="2026-01-01T10:00:00+00:00",
+    )
+    await kg_upsert_fact(
+        "Alice",
+        "works_for",
+        "Contoso",
+        action="assert",
+        observed_at="2026-01-02T10:00:00+00:00",
+    )
+
+    old_state = await kg_get_triples_as_of(
+        as_of="2026-01-01T12:00:00+00:00", subject="Alice", predicate="works_for"
+    )
+    print("as_of_old:", old_state)
+
+    history = await kg_get_fact_history(subject="Alice", predicate="works_for", limit=20)
+    print("history:", history)
+
+    path = await kg_find_path_as_of(
+        "Alice", "Kyiv", as_of="2026-01-03T00:00:00+00:00", max_depth=3
+    )
+    print("path_as_of:", path)
+
+
+asyncio.run(demo_temporal())
+```
+
+Temporal predicate policy (default):
+
+- `single_active`: `works_for`, `belongs_to`, `prefers` (new assert closes previous active object for same subject+predicate)
+- `multi_active`: all other predicates (multiple active facts can coexist)
+
+Configure single-active predicates via env:
+
+```bash
+OMNIMIND_KG_TEMPORAL_SINGLE_ACTIVE_PREDICATES=works_for,belongs_to,prefers
 ```
 
 ## Reliability and safety

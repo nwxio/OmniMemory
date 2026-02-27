@@ -138,6 +138,33 @@ def test_new_mcp_tools_procedural_semantic_and_metrics(tmp_path: Path) -> None:
     assert payload["m_ok"] is True
 
 
+def test_temporal_kg_mcp_tools_roundtrip(tmp_path: Path) -> None:
+    code = (
+        "import asyncio, json\n"
+        "from mcp_server.memory_tools import (\n"
+        "  kg_upsert_fact, kg_get_triples_as_of, kg_get_fact_history, kg_find_path_as_of, kg_get_entity_timeline_summary\n"
+        ")\n"
+        "async def main():\n"
+        "  await kg_upsert_fact('Alice', 'works_for', 'Acme', action='assert', observed_at='2026-01-01T10:00:00+00:00')\n"
+        "  await kg_upsert_fact('Alice', 'works_for', 'Contoso', action='assert', observed_at='2026-01-02T10:00:00+00:00')\n"
+        "  old = await kg_get_triples_as_of(as_of='2026-01-01T12:00:00+00:00', subject='alice', predicate='works_for', limit=10)\n"
+        "  now = await kg_get_triples_as_of(as_of='2026-01-03T12:00:00+00:00', subject='alice', predicate='works_for', limit=10)\n"
+        "  hist = await kg_get_fact_history(subject='Alice', predicate='works_for', limit=20)\n"
+        "  summary = await kg_get_entity_timeline_summary(entity='Alice', predicate='works_for', limit=20)\n"
+        "  await kg_upsert_fact('Contoso', 'located_in', 'Kyiv', action='assert', observed_at='2026-01-02T11:00:00+00:00')\n"
+        "  path = await kg_find_path_as_of('Alice', 'Kyiv', as_of='2026-01-03T12:00:00+00:00', max_depth=3)\n"
+        "  print(json.dumps({'old_obj': old[0]['object'] if old else None, 'now_obj': now[0]['object'] if now else None, 'hist': len(hist), 'path': bool(path), 'summary_events': int(summary.get('total_events', 0))}))\n"
+        "asyncio.run(main())\n"
+    )
+    out = _run_python(code, tmp_path / "temporal_tools.db")
+    payload = json.loads(out.splitlines()[-1])
+    assert payload["old_obj"] == "Acme"
+    assert payload["now_obj"] == "Contoso"
+    assert payload["hist"] >= 3
+    assert payload["path"] is True
+    assert payload["summary_events"] >= 3
+
+
 def test_health_reports_db_backend_selection(tmp_path: Path) -> None:
     code = (
         "import json\nfrom core.db import db_backend_info\nprint(json.dumps(db_backend_info()))\n"

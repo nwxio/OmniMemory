@@ -862,6 +862,50 @@ async def kg_add_triple(
 
 @mcp.tool()
 @_with_db_ready
+async def kg_upsert_fact(
+    subject: str,
+    predicate: str,
+    object_name: str,
+    action: str = "assert",
+    confidence: float = 1.0,
+    source_type: str = "text",
+    session_id: Optional[str] = None,
+    observed_at: Optional[str] = None,
+    valid_from: Optional[str] = None,
+    valid_to: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Upsert temporal fact state in knowledge graph.
+
+    Args:
+        subject: Subject entity
+        predicate: Relationship name
+        object_name: Object entity
+        action: "assert" or "retract"
+        confidence: Confidence score
+        source_type: Source type
+        session_id: Session identifier
+        observed_at: Event observation timestamp (ISO8601)
+        valid_from: Optional validity start (ISO8601)
+        valid_to: Optional validity end (ISO8601)
+    """
+    return await memory.kg_upsert_fact(
+        subject=subject,
+        predicate=predicate,
+        object_name=object_name,
+        action=action,
+        confidence=confidence,
+        source_type=source_type,
+        source_id=None,
+        session_id=session_id,
+        metadata=None,
+        observed_at=observed_at,
+        valid_from=valid_from,
+        valid_to=valid_to,
+    )
+
+
+@mcp.tool()
+@_with_db_ready
 async def kg_get_triples(
     subject: Optional[str] = None,
     predicate: Optional[str] = None,
@@ -879,6 +923,63 @@ async def kg_get_triples(
         limit: Max results
     """
     return await memory.kg_get_triples(subject, predicate, object_name, session_id, limit)
+
+
+@mcp.tool()
+@_with_db_ready
+async def kg_get_triples_as_of(
+    as_of: Optional[str] = None,
+    subject: Optional[str] = None,
+    predicate: Optional[str] = None,
+    object_name: Optional[str] = None,
+    session_id: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """Query triples valid at a given point in time."""
+    return await memory.kg_get_triples_as_of(
+        as_of=as_of,
+        subject=subject,
+        predicate=predicate,
+        object_name=object_name,
+        session_id=session_id,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+@_with_db_ready
+async def kg_get_fact_history(
+    subject: Optional[str] = None,
+    predicate: Optional[str] = None,
+    object_name: Optional[str] = None,
+    session_id: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """Get chronological event history for facts in knowledge graph."""
+    return await memory.kg_get_fact_history(
+        subject=subject,
+        predicate=predicate,
+        object_name=object_name,
+        session_id=session_id,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+@_with_db_ready
+async def kg_get_entity_timeline_summary(
+    entity: str,
+    predicate: Optional[str] = None,
+    session_id: Optional[str] = None,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    """Get aggregated temporal timeline summary for an entity."""
+    return await memory.kg_get_entity_timeline_summary(
+        entity=entity,
+        predicate=predicate,
+        session_id=session_id,
+        limit=limit,
+    )
 
 
 @mcp.tool()
@@ -913,6 +1014,18 @@ async def kg_find_path(
         max_depth: Maximum search depth
     """
     return await memory.kg_find_path(from_entity, to_entity, max_depth)
+
+
+@mcp.tool()
+@_with_db_ready
+async def kg_find_path_as_of(
+    from_entity: str,
+    to_entity: str,
+    as_of: Optional[str] = None,
+    max_depth: int = 3,
+) -> Optional[Dict[str, Any]]:
+    """Find a path between two entities at a given timestamp."""
+    return await memory.kg_find_path_as_of(from_entity, to_entity, as_of, max_depth)
 
 
 @mcp.tool()

@@ -103,8 +103,12 @@ def test_knowledge_graph_neo4j_add_and_read_triples():
     assert triples[0]["id"] == "triple-neo-1"
     assert triples[0]["metadata"] == {"x": 1}
 
-    first_query_params = fake.queries[0]["params"]
-    assert re.match(r"^[0-9a-f]{16}\|works_for\|[0-9a-f]{16}$", first_query_params["triple_key"])
+    triple_key_params = next(
+        q["params"]
+        for q in fake.queries
+        if isinstance(q.get("params"), dict) and "triple_key" in q["params"]
+    )
+    assert re.match(r"^[0-9a-f]{16}\|works_for\|[0-9a-f]{16}$", triple_key_params["triple_key"])
 
 
 def test_knowledge_graph_neo4j_neighbors_search_stats_and_clear():

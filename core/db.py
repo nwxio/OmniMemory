@@ -731,6 +731,78 @@ class DB:
             except Exception:
                 pass
 
+            # Temporal KG columns/tables for evolving-relationship graph.
+            try:
+                if not await _has_column("kg_triples", "updated_at"):
+                    await conn.execute("ALTER TABLE kg_triples ADD COLUMN updated_at TEXT")
+                if not await _has_column("kg_triples", "valid_from"):
+                    await conn.execute("ALTER TABLE kg_triples ADD COLUMN valid_from TEXT")
+                if not await _has_column("kg_triples", "valid_to"):
+                    await conn.execute("ALTER TABLE kg_triples ADD COLUMN valid_to TEXT")
+                if not await _has_column("kg_triples", "is_active"):
+                    await conn.execute(
+                        "ALTER TABLE kg_triples ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+                    )
+                if not await _has_column("kg_triples", "version"):
+                    await conn.execute(
+                        "ALTER TABLE kg_triples ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
+                    )
+                if not await _has_column("kg_triples", "last_event_type"):
+                    await conn.execute("ALTER TABLE kg_triples ADD COLUMN last_event_type TEXT")
+
+                await conn.execute(
+                    "UPDATE kg_triples SET updated_at=created_at WHERE updated_at IS NULL"
+                )
+                await conn.execute(
+                    "UPDATE kg_triples SET valid_from=created_at WHERE valid_from IS NULL"
+                )
+                await conn.execute("UPDATE kg_triples SET is_active=1 WHERE is_active IS NULL")
+                await conn.execute("UPDATE kg_triples SET version=1 WHERE version IS NULL")
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_triples_active ON kg_triples(is_active, predicate_id, subject_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_triples_validity ON kg_triples(valid_from, valid_to)"
+                )
+
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS kg_triple_events (
+                        id TEXT PRIMARY KEY,
+                        triple_id TEXT,
+                        subject_id TEXT NOT NULL REFERENCES kg_subjects(id) ON DELETE CASCADE,
+                        predicate_id TEXT NOT NULL REFERENCES kg_predicates(id) ON DELETE CASCADE,
+                        object_id TEXT NOT NULL REFERENCES kg_objects(id) ON DELETE CASCADE,
+                        action TEXT NOT NULL,
+                        observed_at TEXT NOT NULL,
+                        valid_from TEXT,
+                        valid_to TEXT,
+                        state_active INTEGER NOT NULL,
+                        state_version INTEGER NOT NULL,
+                        confidence REAL,
+                        source_type TEXT,
+                        source_id TEXT,
+                        session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_events_subject_predicate_ts ON kg_triple_events(subject_id, predicate_id, observed_at DESC)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_events_object_ts ON kg_triple_events(object_id, observed_at DESC)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_events_triple_ts ON kg_triple_events(triple_id, observed_at DESC)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_events_session_ts ON kg_triple_events(session_id, observed_at DESC)"
+                )
+            except Exception:
+                pass
+
             # Audit log table
             try:
                 await conn.execute("""
@@ -800,6 +872,12 @@ class PostgresDB:
                 "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS fingerprint TEXT",
                 "ALTER TABLE monitor_results ADD COLUMN IF NOT EXISTS session_id TEXT",
                 "ALTER TABLE monitor_results ADD COLUMN IF NOT EXISTS checked_at TEXT",
+                "ALTER TABLE kg_triples ADD COLUMN IF NOT EXISTS updated_at TEXT",
+                "ALTER TABLE kg_triples ADD COLUMN IF NOT EXISTS valid_from TEXT",
+                "ALTER TABLE kg_triples ADD COLUMN IF NOT EXISTS valid_to TEXT",
+                "ALTER TABLE kg_triples ADD COLUMN IF NOT EXISTS is_active INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE kg_triples ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE kg_triples ADD COLUMN IF NOT EXISTS last_event_type TEXT",
             ]
             for stmt in alter_statements:
                 try:
@@ -817,12 +895,66 @@ class PostgresDB:
                 "UPDATE preferences SET is_locked=1 WHERE is_locked IS NULL",
                 "UPDATE preferences SET created_at=updated_at WHERE created_at IS NULL",
                 "UPDATE preferences SET updated_by='migration' WHERE updated_by IS NULL OR updated_by=''",
+                "UPDATE kg_triples SET updated_at=created_at WHERE updated_at IS NULL",
+                "UPDATE kg_triples SET valid_from=created_at WHERE valid_from IS NULL",
+                "UPDATE kg_triples SET is_active=1 WHERE is_active IS NULL",
+                "UPDATE kg_triples SET version=1 WHERE version IS NULL",
             ]
             for stmt in backfill_statements:
                 try:
                     await conn.execute(stmt)
                 except Exception:
                     pass
+
+            try:
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_triples_active ON kg_triples(is_active, predicate_id, subject_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_triples_validity ON kg_triples(valid_from, valid_to)"
+                )
+            except Exception:
+                pass
+
+            # Temporal triple event stream for time-slice reasoning.
+            try:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS kg_triple_events (
+                        id TEXT PRIMARY KEY,
+                        triple_id TEXT,
+                        subject_id TEXT NOT NULL REFERENCES kg_subjects(id) ON DELETE CASCADE,
+                        predicate_id TEXT NOT NULL REFERENCES kg_predicates(id) ON DELETE CASCADE,
+                        object_id TEXT NOT NULL REFERENCES kg_objects(id) ON DELETE CASCADE,
+                        action TEXT NOT NULL,
+                        observed_at TEXT NOT NULL,
+                        valid_from TEXT,
+                        valid_to TEXT,
+                        state_active INTEGER NOT NULL,
+                        state_version INTEGER NOT NULL,
+                        confidence REAL,
+                        source_type TEXT,
+                        source_id TEXT,
+                        session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_events_subject_predicate_ts ON kg_triple_events(subject_id, predicate_id, observed_at DESC)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_events_object_ts ON kg_triple_events(object_id, observed_at DESC)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_events_triple_ts ON kg_triple_events(triple_id, observed_at DESC)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_events_session_ts ON kg_triple_events(session_id, observed_at DESC)"
+                )
+            except Exception:
+                pass
 
             # Procedural memory tables (parity with SQLite init path).
             try:
@@ -1332,6 +1464,12 @@ CREATE TABLE IF NOT EXISTS kg_triples (
   source_id TEXT,
   session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL,
+   updated_at TEXT,
+   valid_from TEXT,
+   valid_to TEXT,
+   is_active INTEGER NOT NULL DEFAULT 1,
+   version INTEGER NOT NULL DEFAULT 1,
+   last_event_type TEXT,
   metadata_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(subject_id, predicate_id, object_id)
 );
@@ -1340,6 +1478,35 @@ CREATE INDEX IF NOT EXISTS idx_kg_triples_subject ON kg_triples(subject_id);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_object ON kg_triples(object_id);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_predicate ON kg_triples(predicate_id);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_session ON kg_triples(session_id);
+
+CREATE TABLE IF NOT EXISTS kg_triple_events (
+  id TEXT PRIMARY KEY,
+  triple_id TEXT,
+  subject_id TEXT NOT NULL REFERENCES kg_subjects(id) ON DELETE CASCADE,
+  predicate_id TEXT NOT NULL REFERENCES kg_predicates(id) ON DELETE CASCADE,
+  object_id TEXT NOT NULL REFERENCES kg_objects(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  valid_from TEXT,
+  valid_to TEXT,
+  state_active INTEGER NOT NULL,
+  state_version INTEGER NOT NULL,
+  confidence REAL,
+  source_type TEXT,
+  source_id TEXT,
+  session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_kg_events_subject_predicate_ts
+  ON kg_triple_events(subject_id, predicate_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kg_events_object_ts
+  ON kg_triple_events(object_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kg_events_triple_ts
+  ON kg_triple_events(triple_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kg_events_session_ts
+  ON kg_triple_events(session_id, observed_at DESC);
 
 
 -- Memory Attribution (Entity/Process/Session)
